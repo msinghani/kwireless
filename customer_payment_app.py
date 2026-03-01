@@ -10,8 +10,8 @@ from datetime import datetime
 import os
 
 # Configuration
-EXCEL_FILE = "/Users/mikesinghani/.openclaw/workspace/cleaned_billing_by_service.xlsx"
-RECEIPTS_FOLDER = "/Users/mikesinghani/.openclaw/workspace/receipts"
+EXCEL_FILE = "cleaned_billing_by_service.xlsx"
+RECEIPTS_FOLDER = "receipts"
 
 # Create receipts folder if it doesn't exist
 import os
