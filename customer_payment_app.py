@@ -147,16 +147,15 @@ def save_payment(sheet_name, customer_name, payment_amount, notes=""):
         # Find the row with this customer
         for row in ws.iter_rows(min_row=2):
             if row[3].value == customer_name:  # Column D is customer name
-                # Get current balance (Amount Due or Plan Cost)
+                # Get current balance from Amount Due column only
                 current_amount_due = row[7].value  # Column H is Amount Due
-                plan_cost = row[2].value  # Column C is Plan Cost
                 
-                # Calculate current balance
+                # Calculate current balance - use Amount Due only
                 try:
                     if current_amount_due and str(current_amount_due).strip():
                         current_balance = float(str(current_amount_due).strip())
                     else:
-                        current_balance = float(str(plan_cost).strip()) if plan_cost else 0
+                        current_balance = 0
                 except:
                     current_balance = 0
                 
@@ -517,7 +516,7 @@ with tab2:
         total_amount = 0
         for c in results:
             try:
-                amt = c['Amount Due'] if c['Amount Due'] else c['Plan Cost']
+                amt = c['Amount Due'] if c['Amount Due'] else 0
                 if amt:
                     amt_str = str(amt).strip()
                     if amt_str and amt_str.lower() != 'nan':
@@ -591,7 +590,7 @@ with tab3:
         total_amount = 0
         for c in results:
             try:
-                amt = c['Amount Due'] if c['Amount Due'] else c['Plan Cost']
+                amt = c['Amount Due'] if c['Amount Due'] else 0
                 if amt:
                     amt_str = str(amt).strip()
                     if amt_str and amt_str.lower() != 'nan':
