@@ -1,0 +1,648 @@
+"""
+Customer Payment Manager
+A simple interface to look up customers and record payments
+"""
+
+import streamlit as st
+import pandas as pd
+from openpyxl import load_workbook
+from datetime import datetime
+import os
+
+# Configuration
+EXCEL_FILE = "/Users/mikesinghani/.openclaw/workspace/cleaned_billing_by_service.xlsx"
+RECEIPTS_FOLDER = "/Users/mikesinghani/.openclaw/workspace/receipts"
+
+# Create receipts folder if it doesn't exist
+import os
+os.makedirs(RECEIPTS_FOLDER, exist_ok=True)
+
+st.set_page_config(page_title="Customer Payment Manager", page_icon="💳", layout="wide")
+
+def save_customer_notes(sheet_name, customer_name, notes):
+    """Save customer notes to the Excel file"""
+    try:
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[sheet_name]
+        
+        # Find the row with this customer
+        for row in ws.iter_rows(min_row=2):
+            if row[3].value == customer_name:  # Column D is customer name
+                # Update Notes column
+                row[10].value = notes
+                break
+        
+        wb.save(EXCEL_FILE)
+        return True
+    except Exception as e:
+        st.error(f"Error saving notes: {e}")
+        return False
+
+def save_receipt(sheet_name, customer_name, uploaded_file):
+    """Save receipt image to folder and add path to Excel"""
+    try:
+        # Save file
+        safe_name = f"{sheet_name}_{customer_name}_{uploaded_file.name}"
+        safe_name = safe_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+        file_path = os.path.join(RECEIPTS_FOLDER, safe_name)
+        
+        with open(file_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+        
+        # Update Excel with receipt path
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[sheet_name]
+        
+        for row in ws.iter_rows(min_row=2):
+            if row[3].value == customer_name:
+                # Append receipt path to notes or create new column
+                existing_notes = str(row[10].value) if row[10].value else ""
+                receipt_info = f"Receipt: {safe_name}"
+                if existing_notes and existing_notes != "None":
+                    row[10].value = existing_notes + " | " + receipt_info
+                else:
+                    row[10].value = receipt_info
+                break
+        
+        wb.save(EXCEL_FILE)
+        return file_path
+    except Exception as e:
+        st.error(f"Error saving receipt: {e}")
+        return None
+
+def get_balance(customer):
+    """Get the current balance for a customer (negative = credit)"""
+    # Check if already paid - but now check if there's a credit
+    status = str(customer.get('Status', '')).upper() if customer.get('Status') else ''
+    
+    amount_due = customer.get('Amount Due', '')
+    plan_cost = customer.get('Plan Cost', '')
+    
+    # If Amount Due is set, use it (can be negative for credit)
+    if amount_due and str(amount_due).strip() and str(amount_due).strip().lower() != 'nan':
+        try:
+            val = float(str(amount_due).strip())
+            return val
+        except:
+            pass
+    
+    # Otherwise use Plan Cost as the balance
+    if plan_cost and str(plan_cost).strip() and str(plan_cost).strip().lower() != 'nan':
+        try:
+            return float(str(plan_cost).strip())
+        except:
+            pass
+    
+    return 0
+
+# Custom styling
+st.markdown("""
+    <style>
+    .main {
+        background-color: #f5f5f5;
+    }
+    .stButton>button {
+        width: 100%;
+    }
+    .customer-card {
+        background-color: white;
+        padding: 20px;
+        border-radius: 10px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        margin-bottom: 20px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+def load_excel():
+    """Load all sheets from Excel file"""
+    try:
+        excel_file = pd.ExcelFile(EXCEL_FILE)
+        all_data = {}
+        for sheet in excel_file.sheet_names:
+            if sheet != "Summary":
+                df = pd.read_excel(excel_file, sheet_name=sheet)
+                df['Service'] = sheet
+                
+                # Parse charge date to get day of month
+                if 'Charge Date' in df.columns:
+                    try:
+                        df['Charge Date'] = pd.to_datetime(df['Charge Date'], errors='coerce')
+                        df['Due Day'] = df['Charge Date'].dt.day
+                    except:
+                        df['Due Day'] = None
+                
+                all_data[sheet] = df
+        return all_data, excel_file
+    except Exception as e:
+        st.error(f"Error loading file: {e}")
+        return None, None
+
+def save_payment(sheet_name, customer_name, payment_amount, notes=""):
+    """Save a payment to the Excel file"""
+    try:
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[sheet_name]
+        
+        # Find the row with this customer
+        for row in ws.iter_rows(min_row=2):
+            if row[3].value == customer_name:  # Column D is customer name
+                # Get current balance (Amount Due or Plan Cost)
+                current_amount_due = row[7].value  # Column H is Amount Due
+                plan_cost = row[2].value  # Column C is Plan Cost
+                
+                # Calculate current balance
+                try:
+                    if current_amount_due and str(current_amount_due).strip():
+                        current_balance = float(str(current_amount_due).strip())
+                    else:
+                        current_balance = float(str(plan_cost).strip()) if plan_cost else 0
+                except:
+                    current_balance = 0
+                
+                # Calculate new balance after payment
+                new_balance = current_balance - payment_amount
+                
+                # Update Amount Due (can be negative for credit)
+                row[7].value = new_balance
+                
+                # Update Status based on new balance
+                if new_balance <= 0:
+                    row[8].value = "Paid"
+                else:
+                    row[8].value = "Partial"
+                
+                # Add payment date in column 11 (Payment Date)
+                today = datetime.now().strftime('%Y-%m-%d')
+                row[11].value = today
+                
+                # Update notes in column 10 - append payment info
+                existing_notes = str(row[10].value) if row[10].value else ""
+                payment_info = f"Payment ${payment_amount:.2f} on {today}"
+                if notes:
+                    payment_info += f": {notes}"
+                
+                if existing_notes and existing_notes != "None":
+                    row[10].value = existing_notes + " | " + payment_info
+                else:
+                    row[10].value = payment_info
+                
+                break
+        
+        wb.save(EXCEL_FILE)
+        return True
+    except Exception as e:
+        st.error(f"Error saving: {e}")
+        return False
+
+def search_customers(all_data, query):
+    """Search customers across all sheets"""
+    results = []
+    
+    for service, df in all_data.items():
+        if df is None or df.empty:
+            continue
+            
+        # Search in name, phone, or account columns
+        mask = (
+            df['Customer Name'].astype(str).str.contains(query, case=False, na=False) |
+            df['Phone'].astype(str).str.contains(query, case=False, na=False) |
+            df['Card Number'].astype(str).str.contains(query, case=False, na=False)
+        )
+        
+        matches = df[mask]
+        for _, row in matches.iterrows():
+            results.append({
+                'Service': service,
+                'Customer Name': row.get('Customer Name', ''),
+                'Phone': row.get('Phone', ''),
+                'Amount Due': row.get('Amount Due', ''),
+                'Status': row.get('Status', ''),
+                'Card Number': row.get('Card Number', ''),
+                'Exp': row.get('Exp', ''),
+                'CVV': row.get('CVV', ''),
+                'Plan Cost': row.get('Plan Cost', ''),
+                'Charge Date': row.get('Charge Date', ''),
+                'Due Day': row.get('Due Day', ''),
+                'Notes': row.get('Notes', ''),
+                'Payment Date': row.get('Payment Date', '')  # Add Payment Date
+            })
+    
+    return results
+
+def get_customers_by_due_day(all_data, due_day):
+    """Get all customers due on a specific day of the month"""
+    results = []
+    
+    for service, df in all_data.items():
+        if df is None or df.empty:
+            continue
+        
+        # Filter by due day
+        if 'Due Day' in df.columns:
+            matches = df[df['Due Day'] == due_day]
+            
+            for _, row in matches.iterrows():
+                results.append({
+                    'Service': service,
+                    'Customer Name': row.get('Customer Name', ''),
+                    'Phone': row.get('Phone', ''),
+                    'Amount Due': row.get('Amount Due', ''),
+                    'Status': row.get('Status', ''),
+                    'Card Number': row.get('Card Number', ''),
+                    'Exp': row.get('Exp', ''),
+                    'CVV': row.get('CVV', ''),
+                    'Plan Cost': row.get('Plan Cost', ''),
+                    'Charge Date': row.get('Charge Date', ''),
+                    'Due Day': row.get('Due Day', ''),
+                    'Notes': row.get('Notes', ''),
+                    'Payment Date': row.get('Payment Date', '')
+                })
+    
+    return results
+
+def get_past_due_customers(all_data):
+    """Get all customers who are past due (due day has passed and not paid)"""
+    from datetime import datetime
+    
+    results = []
+    today = datetime.now().day
+    
+    for service, df in all_data.items():
+        if df is None or df.empty:
+            continue
+        
+        if 'Due Day' in df.columns and 'Status' in df.columns:
+            for _, row in df.iterrows():
+                due_day = row.get('Due Day')
+                status = row.get('Status', '')
+                
+                # Skip if no due day or already paid
+                if due_day is None or pd.isna(due_day):
+                    continue
+                
+                # Check if past due (due day < today and not paid)
+                status_str = str(status).upper() if status else ''
+                is_paid = 'PAID' in status_str or status_str == 'READY'
+                
+                if due_day < today and not is_paid:
+                    results.append({
+                        'Service': service,
+                        'Customer Name': row.get('Customer Name', ''),
+                        'Phone': row.get('Phone', ''),
+                        'Amount Due': row.get('Amount Due', ''),
+                        'Status': row.get('Status', ''),
+                        'Card Number': row.get('Card Number', ''),
+                        'Exp': row.get('Exp', ''),
+                        'CVV': row.get('CVV', ''),
+                        'Plan Cost': row.get('Plan Cost', ''),
+                        'Charge Date': row.get('Charge Date', ''),
+                        'Due Day': row.get('Due Day', ''),
+                        'Notes': row.get('Notes', ''),
+                        'Payment Date': row.get('Payment Date', '')
+                    })
+    
+    return results
+
+# Main UI
+st.title("💳 Customer Payment Manager")
+
+# Load data
+all_data, excel_file = load_excel()
+
+if all_data is None:
+    st.stop()
+
+# Sidebar with summary
+with st.sidebar:
+    st.header("📊 Summary")
+    
+    total_customers = 0
+    total_revenue = 0
+    
+    for service, df in all_data.items():
+        if df is not None and not df.empty:
+            count = len(df)
+            total_customers += count
+            
+            # Calculate revenue (Amount Due or Plan Cost)
+            revenue = 0
+            for amt in df['Amount Due'].fillna(0):
+                try:
+                    if amt and str(amt).strip():
+                        revenue += float(str(amt).strip())
+                except:
+                    pass
+            if revenue == 0:
+                for amt in df['Plan Cost'].fillna(0):
+                    try:
+                        if amt and str(amt).strip():
+                            revenue += float(str(amt).strip())
+                    except:
+                        pass
+            total_revenue += revenue
+            
+            st.metric(service, f"{count} customers", f"${revenue:,.2f}")
+    
+    st.divider()
+    st.metric("Total Customers", total_customers)
+    st.metric("Total Revenue", f"${total_revenue:,.2f}")
+
+# Main content
+st.header("🔍 Search & Filter")
+
+# Create tabs for different search options
+tab1, tab2, tab3 = st.tabs(["📝 Search by Name", "📅 Filter by Due Date", "⚠️ Past Due"])
+
+with tab1:
+    search_query = st.text_input("Search by name, phone, or account:", placeholder="Enter name or phone...", key="search_name")
+    
+    if search_query:
+        results = search_customers(all_data, search_query)
+        
+        if results:
+            st.write(f"Found **{len(results)}** customer(s)")
+            
+            # Display results
+            for i, customer in enumerate(results):
+                with st.container():
+                    charge_date = customer.get('Charge Date', '')
+                    if charge_date:
+                        try:
+                            charge_date = pd.to_datetime(charge_date).strftime('%Y-%m-%d')
+                        except:
+                            pass
+                    
+                    # Calculate balance
+                    balance = get_balance(customer)
+                    
+                    # Check if overpayment/credit
+                    has_credit = balance < 0
+                    
+                    # Check if already paid
+                    status = str(customer.get('Status', '')).upper() if customer.get('Status') else ''
+                    is_paid = 'PAID' in status or status == 'READY'
+                    
+                    # Format balance display
+                    if has_credit:
+                        balance_display = f"💚 CREDIT: ${abs(balance):.2f}"
+                    elif balance == 0:
+                        balance_display = "$0.00"
+                    else:
+                        balance_display = f"${balance:.2f}"
+                    
+                    # Get existing notes
+                    existing_notes = customer.get('Notes', '') or ''
+                    payment_date = customer.get('Payment Date', '') or ''
+                    
+                    # Format payment date
+                    if payment_date:
+                        try:
+                            payment_date = pd.to_datetime(payment_date).strftime('%Y-%m-%d')
+                        except:
+                            pass
+                    
+                    st.markdown(f"""
+                    <div class="customer-card">
+                        <h3>{customer['Customer Name']}</h3>
+                        <p><strong>Service:</strong> {customer['Service']} | 
+                           <strong>Phone:</strong> {customer['Phone']} | 
+                           <strong>Status:</strong> {customer['Status']}</p>
+                        <p><strong>💰 Balance:</strong> {balance_display} | 
+                           <strong>Due Date:</strong> {charge_date}</p>
+                        <p><strong>💳 Card:</strong> {customer.get('Card Number', 'N/A')} | 
+                           <strong>Exp:</strong> {customer.get('Exp', 'N/A')} | 
+                           <strong>CVV:</strong> {customer.get('CVV', 'N/A')}</p>
+                        <p><strong>📅 Last Payment:</strong> {payment_date if payment_date else 'N/A'}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Notes section - separate from payment notes
+                    st.write("📝 **Customer Notes:**")
+                    with st.expander("View/Edit Notes"):
+                        notes_key = f"notes_{customer['Service']}_{customer['Customer Name']}"
+                        notes_text = st.text_area("Notes (saved to Excel):", value=str(existing_notes), height=100, key=notes_key)
+                        if st.button("💾 Save Notes", key=f"save_notes_{i}"):
+                            if save_customer_notes(customer['Service'], customer['Customer Name'], notes_text):
+                                st.success("Notes saved!")
+                                st.rerun()
+                    
+                    st.divider()
+                    
+                    # Payment form - only show if has balance owing
+                    if is_paid and not has_credit:
+                        st.success(f"✅ {customer['Customer Name']} is paid up! Balance: $0.00")
+                    elif has_credit:
+                        st.success(f"💚 {customer['Customer Name']} has a credit of ${abs(balance):.2f} on their account!")
+                    else:
+                        # Payment form with custom amount
+                        with st.form(f"payment_form_{i}"):
+                            col1, col2, col3 = st.columns([1, 2, 1])
+                            with col1:
+                                payment_amount = st.number_input(f"Payment amount", min_value=0.0, value=float(balance), step=5.0, key=f"amt_{i}")
+                            with col2:
+                                payment_notes = st.text_input("Payment Notes (optional)", key=f"notes_{i}")
+                            with col3:
+                                submitted = st.form_submit_button(f"💰 Record", type="primary")
+                            
+                            if submitted:
+                                if payment_amount > 0:
+                                    new_balance = balance - payment_amount
+                                    if save_payment(customer['Service'], customer['Customer Name'], payment_amount, payment_notes):
+                                        if new_balance < 0:
+                                            st.success(f"Payment of ${payment_amount:.2f} recorded! New balance: -${abs(new_balance):.2f} (CREDIT)")
+                                        elif new_balance == 0:
+                                            st.success(f"Payment of ${payment_amount:.2f} recorded! Balance: $0.00 - PAID IN FULL!")
+                                        else:
+                                            st.success(f"Payment of ${payment_amount:.2f} recorded! New balance: ${new_balance:.2f}")
+                                        st.rerun()
+                                else:
+                                    st.warning("Please enter a payment amount greater than $0")
+                    
+                    st.divider()
+                    
+                    # Receipt upload section
+                    st.write("🧾 **Upload Receipt:**")
+                    receipt_key = f"receipt_{customer['Service']}_{customer['Customer Name']}"
+                    uploaded_file = st.file_uploader("Upload receipt image (PNG, JPG, PDF)", type=['png', 'jpg', 'jpeg', 'pdf'], key=receipt_key)
+                    
+                    if uploaded_file is not None:
+                        if st.button(f"💾 Save Receipt", key=f"save_receipt_{i}"):
+                            file_path = save_receipt(customer['Service'], customer['Customer Name'], uploaded_file)
+                            if file_path:
+                                st.success(f"Receipt saved: {uploaded_file.name}")
+                                st.rerun()
+                    
+                    st.divider()
+        else:
+            st.warning("No customers found matching your search.")
+    else:
+        st.info("Enter a name, phone number, or account to search.")
+
+with tab2:
+    st.subheader("📅 Filter Customers by Due Date")
+    
+    # Day selector
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        selected_day = st.selectbox(
+            "Select Due Day of Month:",
+            options=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31],
+            index=0,
+            format_func=lambda x: f"{x}{'st' if x==1 else 'nd' if x==2 else 'rd' if x==3 else 'th'}"
+        )
+    
+    with col2:
+        st.write("")
+        st.write("")
+        if st.button("🔄 Show All Due Dates", key="show_all_days"):
+            st.rerun()
+    
+    # Get customers due on that day
+    results = get_customers_by_due_day(all_data, selected_day)
+    
+    if results:
+        st.write(f"### 📋 Customers Due on the {selected_day}{'st' if selected_day==1 else 'nd' if selected_day==2 else 'rd' if selected_day==3 else 'th'} of the Month")
+        st.write(f"**{len(results)}** customer(s) found")
+        
+        # Calculate totals
+        total_amount = 0
+        for c in results:
+            try:
+                amt = c['Amount Due'] if c['Amount Due'] else c['Plan Cost']
+                if amt:
+                    amt_str = str(amt).strip()
+                    if amt_str and amt_str.lower() != 'nan':
+                        total_amount += float(amt_str)
+            except:
+                pass
+        
+        if total_amount > 0:
+            st.info(f"💰 **Total Due: ${total_amount:,.2f}**")
+        else:
+            st.info("💰 **Total Due: See individual amounts below**")
+        
+        # Display as table
+        display_data = []
+        for customer in results:
+            charge_date = customer.get('Charge Date', '')
+            if charge_date:
+                try:
+                    charge_date = pd.to_datetime(charge_date).strftime('%Y-%m-%d')
+                except:
+                    pass
+            
+            balance = get_balance(customer)
+            
+            display_data.append({
+                'Service': customer['Service'],
+                'Customer Name': customer['Customer Name'],
+                'Phone': customer['Phone'],
+                'Balance': f"${balance:.2f}",
+                'Status': customer['Status'],
+                'Charge Date': charge_date,
+                'Card Number': customer.get('Card Number', ''),
+                'Exp': customer.get('Exp', ''),
+                'Notes': customer.get('Notes', '')
+            })
+        
+        display_df = pd.DataFrame(display_data)
+        st.dataframe(display_df, hide_index=True, use_container_width=True)
+        
+        # Payment section for each
+        st.write("### 💳 Record Payments")
+        
+        for i, customer in enumerate(results):
+            balance = get_balance(customer)
+            with st.expander(f"{customer['Customer Name']} ({customer['Service']}) - 💰 Balance: ${balance:.2f}"):
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    payment_notes = st.text_input("Payment Notes (optional)", key=f"date_notes_{selected_day}_{i}")
+                with col2:
+                    if st.button(f"💰 Pay ${balance:.2f}", key=f"pay_{selected_day}_{i}"):
+                        if save_payment(customer['Service'], customer['Customer Name'], balance, payment_notes):
+                            st.success(f"Payment of ${balance:.2f} recorded! New balance: $0.00")
+                            st.rerun()
+    else:
+        st.warning(f"No customers due on the {selected_day}{'st' if selected_day==1 else 'nd' if selected_day==2 else 'rd' if selected_day==3 else 'th'} of the month.")
+
+with tab3:
+    from datetime import datetime
+    today = datetime.now().day
+    
+    st.subheader("⚠️ Past Due Customers")
+    st.write(f"Customers whose due date has passed (before the {today}{'st' if today==1 else 'nd' if today==2 else 'rd' if today==3 else 'th'} of the month) and haven't paid yet.")
+    
+    # Get past due customers
+    results = get_past_due_customers(all_data)
+    
+    if results:
+        st.write(f"### ⚠️ {len(results)} Past Due Customer(s)")
+        
+        # Calculate totals
+        total_amount = 0
+        for c in results:
+            try:
+                amt = c['Amount Due'] if c['Amount Due'] else c['Plan Cost']
+                if amt:
+                    amt_str = str(amt).strip()
+                    if amt_str and amt_str.lower() != 'nan':
+                        total_amount += float(amt_str)
+            except:
+                pass
+        
+        if total_amount > 0:
+            st.error(f"💸 **Total Past Due: ${total_amount:,.2f}**")
+        else:
+            st.warning("💸 **Total Past Due: See individual amounts below**")
+        
+        # Display as table
+        display_data = []
+        for customer in results:
+            charge_date = customer.get('Charge Date', '')
+            due_day = customer.get('Due Day', '')
+            if charge_date:
+                try:
+                    charge_date = pd.to_datetime(charge_date).strftime('%Y-%m-%d')
+                except:
+                    pass
+            
+            balance = get_balance(customer)
+            
+            display_data.append({
+                'Service': customer['Service'],
+                'Customer Name': customer['Customer Name'],
+                'Phone': customer['Phone'],
+                'Balance': f"${balance:.2f}",
+                'Due Day': f"{due_day}{'st' if due_day==1 else 'nd' if due_day==2 else 'rd' if due_day==3 else 'th'}",
+                'Status': customer['Status'],
+                'Card Number': customer.get('Card Number', ''),
+                'Exp': customer.get('Exp', ''),
+                'Notes': customer.get('Notes', '')
+            })
+        
+        display_df = pd.DataFrame(display_data)
+        st.dataframe(display_df, hide_index=True, use_container_width=True)
+        
+        # Payment section for each
+        st.write("### 💳 Record Payments")
+        
+        for i, customer in enumerate(results):
+            due_day = customer.get('Due Day', '')
+            balance = get_balance(customer)
+            with st.expander(f"⚠️ {customer['Customer Name']} ({customer['Service']}) - 💰 Balance: ${balance:.2f} - Due: {due_day}{'st' if due_day==1 else 'nd' if due_day==2 else 'rd' if due_day==3 else 'th'}"):
+                col1, col2 = st.columns([2, 1])
+                with col1:
+                    payment_notes = st.text_input("Payment Notes (optional)", key=f"pastdue_notes_{i}")
+                with col2:
+                    if st.button(f"💰 Pay ${balance:.2f}", key=f"pay_pastdue_{i}"):
+                        if save_payment(customer['Service'], customer['Customer Name'], balance, payment_notes):
+                            st.success(f"Payment of ${balance:.2f} recorded! New balance: $0.00")
+                            st.rerun()
+    else:
+        st.success("✅ No past due customers! Everyone is paid up!")
+
+# Footer
+st.divider()
+st.caption(f"💾 Data file: {EXCEL_FILE}")
