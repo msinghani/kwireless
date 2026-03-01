@@ -38,6 +38,25 @@ def save_customer_notes(sheet_name, customer_name, notes):
         st.error(f"Error saving notes: {e}")
         return False
 
+def save_due_date(sheet_name, customer_name, due_day):
+    """Save customer due date to the Excel file"""
+    try:
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[sheet_name]
+        
+        # Find the row with this customer
+        for row in ws.iter_rows(min_row=2):
+            if row[3].value == customer_name:  # Column D is customer name
+                # Update Due Day column (column L = index 11)
+                row[11].value = due_day
+                break
+        
+        wb.save(EXCEL_FILE)
+        return True
+    except Exception as e:
+        st.error(f"Error saving due date: {e}")
+        return False
+
 def save_receipt(sheet_name, customer_name, uploaded_file):
     """Save receipt image to folder and add path to Excel"""
     try:
@@ -117,13 +136,17 @@ def load_excel():
                 df = pd.read_excel(excel_file, sheet_name=sheet)
                 df['Service'] = sheet
                 
-                # Parse charge date to get day of month
-                if 'Charge Date' in df.columns:
-                    try:
-                        df['Charge Date'] = pd.to_datetime(df['Charge Date'], errors='coerce')
-                        df['Due Day'] = df['Charge Date'].dt.day
-                    except:
-                        df['Due Day'] = None
+                # Parse charge date to get day of month - only if Due Day column doesn't exist
+                if 'Due Day' not in df.columns:
+                    if 'Charge Date' in df.columns:
+                        try:
+                            df['Charge Date'] = pd.to_datetime(df['Charge Date'], errors='coerce')
+                            df['Due Day'] = df['Charge Date'].dt.day
+                        except:
+                            df['Due Day'] = None
+                # If Due Day exists in Excel, make sure it's available
+                elif 'Due Day' in df.columns:
+                    pass  # Already has Due Day column
                 
                 all_data[sheet] = df
         return all_data, excel_file
@@ -408,6 +431,18 @@ with tab1:
                         <p><strong>📅 Last Payment:</strong> {payment_date if payment_date else 'N/A'}</p>
                     </div>
                     """, unsafe_allow_html=True)
+                    
+                    # Due Date Edit section
+                    st.write("📅 **Due Date:**")
+                    current_due_day = customer.get('Due Day', 1)
+                    if not current_due_day or str(current_due_day) == 'None' or pd.isna(current_due_day):
+                        current_due_day = 1
+                    due_key = f"due_day_{customer['Service']}_{customer['Customer Name']}"
+                    new_due_day = st.number_input("Due Day of Month (1-31):", min_value=1, max_value=31, value=int(current_due_day), key=due_key)
+                    if st.button("💾 Save Due Date", key=f"save_due_{i}"):
+                        if save_due_date(customer['Service'], customer['Customer Name'], new_due_day):
+                            st.success("Due date saved!")
+                            st.rerun()
                     
                     # Notes section - separate from payment notes
                     st.write("📝 **Customer Notes:**")
