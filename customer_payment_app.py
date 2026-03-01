@@ -76,9 +76,8 @@ def get_balance(customer):
     status = str(customer.get('Status', '')).upper() if customer.get('Status') else ''
     
     amount_due = customer.get('Amount Due', '')
-    plan_cost = customer.get('Plan Cost', '')
     
-    # If Amount Due is set, use it (can be negative for credit)
+    # Use Amount Due column only - never fallback to Plan Cost
     if amount_due and str(amount_due).strip() and str(amount_due).strip().lower() != 'nan':
         try:
             val = float(str(amount_due).strip())
@@ -86,13 +85,7 @@ def get_balance(customer):
         except:
             pass
     
-    # Otherwise use Plan Cost as the balance
-    if plan_cost and str(plan_cost).strip() and str(plan_cost).strip().lower() != 'nan':
-        try:
-            return float(str(plan_cost).strip())
-        except:
-            pass
-    
+    # If Amount Due is empty/invalid, return 0
     return 0
 
 # Custom styling
@@ -339,13 +332,6 @@ with st.sidebar:
                         revenue += float(str(amt).strip())
                 except:
                     pass
-            if revenue == 0:
-                for amt in df['Plan Cost'].fillna(0):
-                    try:
-                        if amt and str(amt).strip():
-                            revenue += float(str(amt).strip())
-                    except:
-                        pass
             total_revenue += revenue
             
             st.metric(service, f"{count} customers", f"${revenue:,.2f}")
