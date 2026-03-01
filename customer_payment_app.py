@@ -262,7 +262,7 @@ def get_customers_by_due_day(all_data, due_day):
     return results
 
 def get_past_due_customers(all_data):
-    """Get all customers who are past due (due day has passed and not paid)"""
+    """Get all customers who are past due (not paid and have an amount due)"""
     from datetime import datetime
     
     results = []
@@ -276,16 +276,23 @@ def get_past_due_customers(all_data):
             for _, row in df.iterrows():
                 due_day = row.get('Due Day')
                 status = row.get('Status', '')
+                amount_due = row.get('Amount Due', 0)
                 
-                # Skip if no due day or already paid
+                # Skip if no due day
                 if due_day is None or pd.isna(due_day):
                     continue
                 
-                # Check if past due (due day < today and not paid)
+                # Check if past due: not paid, has amount due, and due day has passed
                 status_str = str(status).upper() if status else ''
                 is_paid = 'PAID' in status_str or status_str == 'READY'
                 
-                if due_day < today and not is_paid:
+                # Also check if they have a balance (amount due > 0)
+                try:
+                    has_balance = float(amount_due) > 0 if amount_due else False
+                except:
+                    has_balance = False
+                
+                if not is_paid and has_balance:
                     results.append({
                         'Service': service,
                         'Customer Name': row.get('Customer Name', ''),
