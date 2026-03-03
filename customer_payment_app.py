@@ -513,18 +513,18 @@ with tab1:
                     elif has_credit:
                         st.success(f"💚 {customer['Customer Name']} has a credit of ${abs(balance):.2f} on their account!")
                     else:
-                        # Payment form with custom amount
+                        # Payment form with custom amount (allows negative to adjust balance)
                         with st.form(f"payment_form_{i}"):
                             col1, col2, col3 = st.columns([1, 2, 1])
                             with col1:
-                                payment_amount = st.number_input(f"Payment amount", min_value=0.0, value=float(balance), step=5.0, key=f"amt_{i}")
+                                payment_amount = st.number_input(f"Payment amount", min_value=-10000.0, value=float(balance), step=5.0, key=f"amt_{i}")
                             with col2:
                                 payment_notes = st.text_input("Payment Notes (optional)", key=f"notes_{i}")
                             with col3:
                                 submitted = st.form_submit_button(f"💰 Record", type="primary")
                             
                             if submitted:
-                                if payment_amount > 0:
+                                if payment_amount != 0:
                                     new_balance = balance - payment_amount
                                     if save_payment(customer['Service'], customer['Customer Name'], payment_amount, payment_notes):
                                         if new_balance < 0:
@@ -535,7 +535,7 @@ with tab1:
                                             st.success(f"Payment of ${payment_amount:.2f} recorded! New balance: ${new_balance:.2f}")
                                         st.rerun()
                                 else:
-                                    st.warning("Please enter a payment amount greater than $0")
+                                    st.warning("Please enter a non-zero amount")
                     
                     st.divider()
                     
@@ -634,14 +634,21 @@ with tab2:
         for i, customer in enumerate(results):
             balance = get_balance(customer)
             with st.expander(f"{customer['Customer Name']} ({customer['Service']}) - 💰 Balance: ${balance:.2f}"):
-                col1, col2 = st.columns([2, 1])
+                # Allow custom amount (including negative for adjustments)
+                col1, col2, col3 = st.columns([1, 2, 1])
                 with col1:
-                    payment_notes = st.text_input("Payment Notes (optional)", key=f"date_notes_{selected_day}_{i}")
+                    adjust_amount = st.number_input("Amount", min_value=-10000.0, value=float(balance), step=5.0, key=f"adjust_{selected_day}_{i}")
                 with col2:
-                    if st.button(f"💰 Pay ${balance:.2f}", key=f"pay_{selected_day}_{i}"):
-                        if save_payment(customer['Service'], customer['Customer Name'], balance, payment_notes):
-                            st.success(f"Payment of ${balance:.2f} recorded! New balance: $0.00")
-                            st.rerun()
+                    payment_notes = st.text_input("Payment Notes (optional)", key=f"date_notes_{selected_day}_{i}")
+                with col3:
+                    if st.button(f"💰 Record", key=f"pay_{selected_day}_{i}"):
+                        if adjust_amount != 0:
+                            new_balance = balance - adjust_amount
+                            if save_payment(customer['Service'], customer['Customer Name'], adjust_amount, payment_notes):
+                                st.success(f"Recorded ${adjust_amount:.2f}! New balance: ${new_balance:.2f}")
+                                st.rerun()
+                        else:
+                            st.warning("Enter a non-zero amount")
     else:
         st.warning(f"No customers due on the {selected_day}{'st' if selected_day==1 else 'nd' if selected_day==2 else 'rd' if selected_day==3 else 'th'} of the month.")
 
@@ -710,14 +717,21 @@ with tab3:
             due_day = customer.get('Due Day', '')
             balance = get_balance(customer)
             with st.expander(f"⚠️ {customer['Customer Name']} ({customer['Service']}) - 💰 Balance: ${balance:.2f} - Due: {due_day}{'st' if due_day==1 else 'nd' if due_day==2 else 'rd' if due_day==3 else 'th'}"):
-                col1, col2 = st.columns([2, 1])
+                # Allow custom amount (including negative for adjustments)
+                col1, col2, col3 = st.columns([1, 2, 1])
                 with col1:
-                    payment_notes = st.text_input("Payment Notes (optional)", key=f"pastdue_notes_{i}")
+                    adjust_amount = st.number_input("Amount", min_value=-10000.0, value=float(balance), step=5.0, key=f"adjust_pastdue_{i}")
                 with col2:
-                    if st.button(f"💰 Pay ${balance:.2f}", key=f"pay_pastdue_{i}"):
-                        if save_payment(customer['Service'], customer['Customer Name'], balance, payment_notes):
-                            st.success(f"Payment of ${balance:.2f} recorded! New balance: $0.00")
-                            st.rerun()
+                    payment_notes = st.text_input("Payment Notes (optional)", key=f"pastdue_notes_{i}")
+                with col3:
+                    if st.button(f"💰 Record", key=f"pay_pastdue_{i}"):
+                        if adjust_amount != 0:
+                            new_balance = balance - adjust_amount
+                            if save_payment(customer['Service'], customer['Customer Name'], adjust_amount, payment_notes):
+                                st.success(f"Recorded ${adjust_amount:.2f}! New balance: ${new_balance:.2f}")
+                                st.rerun()
+                        else:
+                            st.warning("Enter a non-zero amount")
     else:
         st.success("✅ No past due customers! Everyone is paid up!")
 
