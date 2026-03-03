@@ -326,6 +326,49 @@ def get_past_due_customers(all_data):
     
     return results
 
+def get_collections_by_date(all_data, start_date, end_date):
+    """Get all payments collected within a date range"""
+    from datetime import datetime
+    
+    results = []
+    
+    for service, df in all_data.items():
+        if df is None or df.empty:
+            continue
+        
+        if 'Payment Date' in df.columns:
+            for _, row in df.iterrows():
+                payment_date = row.get('Payment Date')
+                
+                # Skip if no payment date
+                if payment_date is None or pd.isna(payment_date):
+                    continue
+                
+                # Parse payment date
+                try:
+                    payment_date = pd.to_datetime(payment_date)
+                except:
+                    continue
+                
+                # Check if within date range
+                if start_date <= payment_date.date() <= end_date:
+                    # Calculate payment amount from the change in balance
+                    # We'll get the current amount due and show it as collected
+                    amount_due = row.get('Amount Due', 0)
+                    status = row.get('Status', '')
+                    
+                    results.append({
+                        'Service': service,
+                        'Customer Name': row.get('Customer Name', ''),
+                        'Phone': row.get('Phone', ''),
+                        'Amount Collected': amount_due,
+                        'Status': status,
+                        'Payment Date': payment_date.strftime('%Y-%m-%d'),
+                        'Notes': row.get('Notes', '')
+                    })
+    
+    return results
+
 # Main UI
 st.title("💳 Customer Payment Manager")
 
@@ -367,7 +410,7 @@ with st.sidebar:
 st.header("🔍 Search & Filter")
 
 # Create tabs for different search options
-tab1, tab2, tab3 = st.tabs(["📝 Search by Name", "📅 Filter by Due Date", "⚠️ Past Due"])
+tab1, tab2, tab3, tab4 = st.tabs(["📝 Search by Name", "📅 Filter by Due Date", "⚠️ Past Due", "💰 Collections History"])
 
 with tab1:
     search_query = st.text_input("Search by name, phone, or account:", placeholder="Enter name or phone...", key="search_name")
@@ -677,6 +720,103 @@ with tab3:
                             st.rerun()
     else:
         st.success("✅ No past due customers! Everyone is paid up!")
+
+with tab4:
+    from datetime import datetime, timedelta
+    
+    st.subheader("💰 Collections History")
+    st.write("View payments collected on a specific day or date range")
+    
+    # Date selection
+    col1, col2, col3 = st.columns([1, 1, 1])
+    
+    with col1:
+        # Default to today
+        today = datetime.now().date()
+        start_date = st.date_input("Start Date", value=today)
+    
+    with col2:
+        end_date = st.date_input("End Date", value=today)
+    
+    with col3:
+        st.write("")
+        st.write("")
+        # Quick select buttons
+        col_q1, col_q2, col_q3 = st.columns(3)
+        with col_q1:
+            if st.button("Today"):
+                start_date = today
+                end_date = today
+                st.rerun()
+        with col_q2:
+            if st.button("Yesterday"):
+                yesterday = today - timedelta(days=1)
+                start_date = yesterday
+                end_date = yesterday
+                st.rerun()
+        with col_q3:
+            if st.button("This Week"):
+                start_date = today - timedelta(days=today.weekday())
+                end_date = today
+                st.rerun()
+    
+    # Get collections for date range
+    collections = get_collections_by_date(all_data, start_date, end_date)
+    
+    if collections:
+        st.write(f"### 📋 Payments from {start_date} to {end_date}")
+        st.write(f"**{len(collections)}** payment(s) found")
+        
+        # Calculate total collected
+        total_collected = 0
+        for c in collections:
+            try:
+                amt = c['Amount Collected']
+                if amt:
+                    amt_str = str(amt).strip()
+                    if amt_str and amt_str.lower() != 'nan':
+                        total_collected += float(amt_str)
+            except:
+                pass
+        
+        if total_collected > 0:
+            st.success(f"💵 **Total Collected: ${total_collected:,.2f}**")
+        
+        # Display as table
+        display_data = []
+        for payment in collections:
+            display_data.append({
+                'Service': payment['Service'],
+                'Customer Name': payment['Customer Name'],
+                'Phone': payment['Phone'],
+                'Amount': f"${payment['Amount Collected']:.2f}" if payment['Amount Collected'] else "$0.00",
+                'Payment Date': payment['Payment Date'],
+                'Status': payment['Status']
+            })
+        
+        display_df = pd.DataFrame(display_data)
+        st.dataframe(display_df, hide_index=True, use_container_width=True)
+        
+        # Summary by service
+        st.write("### 📊 Summary by Service")
+        service_totals = {}
+        for payment in collections:
+            service = payment['Service']
+            amt = payment['Amount Collected'] if payment['Amount Collected'] else 0
+            try:
+                amt = float(str(amt).strip())
+            except:
+                amt = 0
+            if service in service_totals:
+                service_totals[service] += amt
+            else:
+                service_totals[service] = amt
+        
+        for service, total in service_totals.items():
+            st.metric(service, f"${total:,.2f}")
+        
+    else:
+        st.info(f"No payments found between {start_date} and {end_date}")
 
 # Footer
 st.divider()
