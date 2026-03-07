@@ -53,6 +53,32 @@ def save_due_date(sheet_name, customer_name, due_day):
         return False
 
 
+def save_customer_info(sheet_name, customer_name, new_name, phone, card_number, exp, cvv, plan_cost):
+    """Save customer info (name, phone, card, plan cost) to the Excel file"""
+    try:
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[sheet_name]
+        
+        # Find the row with this customer
+        for row in ws.iter_rows(min_row=2):
+            if row[3].value == customer_name:  # Column D is customer name
+                # Update columns
+                row[3].value = new_name  # Customer Name (Column D)
+                row[9].value = phone     # Phone (Column J)
+                row[4].value = card_number  # Card Number (Column E)
+                row[5].value = exp      # Exp (Column F)
+                row[6].value = cvv       # CVV (Column G)
+                row[2].value = plan_cost  # Plan Cost (Column C)
+                break
+        
+        wb.save(EXCEL_FILE)
+        return True
+    except Exception as e:
+        st.error(f"Error saving customer info: {e}")
+        return False
+
+
+
 def get_balance(customer):
     """Get the current balance for a customer (negative = credit)"""
     # Check if already paid - but now check if there's a credit
@@ -458,7 +484,25 @@ with tab1:
                         if save_due_date(customer['Service'], customer['Customer Name'], new_due_day):
                             st.success("Due date saved!")
                             st.rerun()
-                    
+
+                    # Customer Info Edit section
+                    st.write("👤 **Customer Info:**")
+                    with st.expander("Edit Customer Info"):
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            edit_name = st.text_input("Customer Name", value=str(customer.get('Customer Name', '')), key=f"edit_name_{i}")
+                            edit_phone = st.text_input("Phone", value=str(customer.get('Phone', '')), key=f"edit_phone_{i}")
+                            edit_card = st.text_input("Card Number", value=str(customer.get('Card Number', '')), key=f"edit_card_{i}")
+                        with col2:
+                            edit_exp = st.text_input("Exp", value=str(customer.get('Exp', '')), key=f"edit_exp_{i}")
+                            edit_cvv = st.text_input("CVV", value=str(customer.get('CVV', '')), key=f"edit_cvv_{i}")
+                            edit_plan_cost = st.number_input("Plan Cost", min_value=0.0, value=float(customer.get('Plan Cost', 0) or 0), step=1.0, key=f"edit_plan_{i}")
+                        
+                        if st.button("💾 Save Customer Info", key=f"save_info_{i}"):
+                            if save_customer_info(customer['Service'], customer['Customer Name'], edit_name, edit_phone, edit_card, edit_exp, edit_cvv, edit_plan_cost):
+                                st.success("Customer info saved!")
+                                st.rerun()
+
                     # Notes section - separate from payment notes
                     st.write("📝 **Customer Notes:**")
                     with st.expander("View/Edit Notes"):
