@@ -11,11 +11,6 @@ import os
 
 # Configuration
 EXCEL_FILE = "cleaned_billing_by_service.xlsx"
-RECEIPTS_FOLDER = "receipts"
-
-# Create receipts folder if it doesn't exist
-import os
-os.makedirs(RECEIPTS_FOLDER, exist_ok=True)
 
 st.set_page_config(page_title="Customer Payment Manager", page_icon="💳", layout="wide")
 
@@ -57,37 +52,6 @@ def save_due_date(sheet_name, customer_name, due_day):
         st.error(f"Error saving due date: {e}")
         return False
 
-def save_receipt(sheet_name, customer_name, uploaded_file):
-    """Save receipt image to folder and add path to Excel"""
-    try:
-        # Save file
-        safe_name = f"{sheet_name}_{customer_name}_{uploaded_file.name}"
-        safe_name = safe_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
-        file_path = os.path.join(RECEIPTS_FOLDER, safe_name)
-        
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        
-        # Update Excel with receipt path
-        wb = load_workbook(EXCEL_FILE)
-        ws = wb[sheet_name]
-        
-        for row in ws.iter_rows(min_row=2):
-            if row[3].value == customer_name:
-                # Append receipt path to notes or create new column
-                existing_notes = str(row[10].value) if row[10].value else ""
-                receipt_info = f"Receipt: {safe_name}"
-                if existing_notes and existing_notes != "None":
-                    row[10].value = existing_notes + " | " + receipt_info
-                else:
-                    row[10].value = receipt_info
-                break
-        
-        wb.save(EXCEL_FILE)
-        return file_path
-    except Exception as e:
-        st.error(f"Error saving receipt: {e}")
-        return None
 
 def get_balance(customer):
     """Get the current balance for a customer (negative = credit)"""
@@ -538,18 +502,6 @@ with tab1:
                                     st.warning("Please enter a non-zero amount")
                     
                     st.divider()
-                    
-                    # Receipt upload section
-                    st.write("🧾 **Upload Receipt:**")
-                    receipt_key = f"receipt_{customer['Service']}_{customer['Customer Name']}"
-                    uploaded_file = st.file_uploader("Upload receipt image (PNG, JPG, PDF)", type=['png', 'jpg', 'jpeg', 'pdf'], key=receipt_key)
-                    
-                    if uploaded_file is not None:
-                        if st.button(f"💾 Save Receipt", key=f"save_receipt_{i}"):
-                            file_path = save_receipt(customer['Service'], customer['Customer Name'], uploaded_file)
-                            if file_path:
-                                st.success(f"Receipt saved: {uploaded_file.name}")
-                                st.rerun()
                     
                     st.divider()
         else:
