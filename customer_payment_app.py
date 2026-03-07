@@ -862,6 +862,22 @@ with tab4:
     else:
         st.info(f"No payments found between {start_date} and {end_date}")
 
+
+
+# Admin section for database management
+st.divider()
+st.header("🗄️ Database Management")
+
+with st.expander("Upload New Database"):
+    uploaded_file = st.file_uploader("Choose Excel file", type=['xlsx'])
+    if uploaded_file is not None:
+        if st.button("Replace Database"):
+            # Save the uploaded file
+            with open(EXCEL_FILE, 'wb') as f:
+                f.write(uploaded_file.getbuffer())
+            st.success("Database replaced! Restarting...")
+            st.rerun()
+
 # Footer
 st.divider()
 st.caption(f"💾 Data file: {EXCEL_FILE}")
