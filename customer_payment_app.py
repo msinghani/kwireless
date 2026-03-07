@@ -509,9 +509,12 @@ with tab1:
                             st.success("Due date saved!")
                             st.rerun()
 
-                    # Customer Info Edit section
-                    st.write("👤 **Customer Info:**")
-                    with st.expander("Edit Customer Info"):
+                    # Customer Info Edit section - hidden by default
+                    edit_info_key = f"edit_info_{customer['Service']}_{customer['Customer Name']}"
+                    if st.button("✏️ Edit Info", key=edit_info_key):
+                        st.session_state[edit_info_key] = True
+                    
+                    if st.session_state.get(edit_info_key, False):
                         col1, col2 = st.columns(2)
                         with col1:
                             edit_name = st.text_input("Customer Name", value=str(customer.get('Customer Name', '')), key=f"edit_name_{i}")
@@ -522,9 +525,16 @@ with tab1:
                             edit_cvv = st.text_input("CVV", value=str(customer.get('CVV', '')), key=f"edit_cvv_{i}")
                             edit_plan_cost = st.number_input("Plan Cost", min_value=0.0, value=float(customer.get('Plan Cost', 0) or 0), step=1.0, key=f"edit_plan_{i}")
                         
-                        if st.button("💾 Save Customer Info", key=f"save_info_{i}"):
-                            if save_customer_info(customer['Service'], customer['Customer Name'], edit_name, edit_phone, edit_card, edit_exp, edit_cvv, edit_plan_cost):
-                                st.success("Customer info saved!")
+                        col_btn1, col_btn2 = st.columns(2)
+                        with col_btn1:
+                            if st.button("💾 Save Customer Info", key=f"save_info_{i}"):
+                                if save_customer_info(customer['Service'], customer['Customer Name'], edit_name, edit_phone, edit_card, edit_exp, edit_cvv, edit_plan_cost):
+                                    st.success("Customer info saved!")
+                                    st.session_state[edit_info_key] = False
+                                    st.rerun()
+                        with col_btn2:
+                            if st.button("❌ Cancel", key=f"cancel_info_{i}"):
+                                st.session_state[edit_info_key] = False
                                 st.rerun()
 
                     # Notes section - separate from payment notes
