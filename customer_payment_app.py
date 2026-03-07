@@ -511,10 +511,9 @@ with tab1:
 
                     # Customer Info Edit section - hidden by default
                     edit_info_key = f"edit_info_{customer['Service']}_{customer['Customer Name']}"
-                    if st.button("✏️ Edit Info", key=edit_info_key):
-                        st.session_state[edit_info_key] = True
+                    show_edit = st.checkbox("✏️ Edit Info", key=edit_info_key)
                     
-                    if st.session_state.get(edit_info_key, False):
+                    if show_edit:
                         col1, col2 = st.columns(2)
                         with col1:
                             edit_name = st.text_input("Customer Name", value=str(customer.get('Customer Name', '')), key=f"edit_name_{i}")
@@ -530,12 +529,9 @@ with tab1:
                             if st.button("💾 Save Customer Info", key=f"save_info_{i}"):
                                 if save_customer_info(customer['Service'], customer['Customer Name'], edit_name, edit_phone, edit_card, edit_exp, edit_cvv, edit_plan_cost):
                                     st.success("Customer info saved!")
-                                    st.session_state[edit_info_key] = False
                                     st.rerun()
                         with col_btn2:
-                            if st.button("❌ Cancel", key=f"cancel_info_{i}"):
-                                st.session_state[edit_info_key] = False
-                                st.rerun()
+                            pass
 
                     # Notes section - separate from payment notes
                     existing_notes2 = customer.get('Notes2', '') or ''
