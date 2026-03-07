@@ -542,13 +542,10 @@ with tab1:
                                     st.rerun()
                     with col_notes2:
                         st.write("📝 **Customer Notes 2:**")
-                        with st.expander("View/Edit Notes2"):
-                            notes2_key = f"notes2_{customer['Service']}_{customer['Customer Name']}"
-                            notes2_text = st.text_area("Notes2 (saved to Excel):", value=str(existing_notes2), height=100, key=notes2_key)
-                            if st.button("💾 Save Notes2", key=f"save_notes2_{i}"):
-                                if save_notes2(customer['Service'], customer['Customer Name'], notes2_text):
-                                    st.success("Notes2 saved!")
-                                    st.rerun()
+                        if existing_notes2 and str(existing_notes2) != 'None' and str(existing_notes2).strip():
+                            st.info(f"{existing_notes2}")
+                        else:
+                            st.caption("No Notes2 yet")
                     
                     st.divider()
                     
