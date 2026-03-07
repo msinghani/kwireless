@@ -511,7 +511,7 @@ with tab1:
 
                     # Customer Info Edit section - hidden by default
                     edit_info_key = f"edit_info_{customer['Service']}_{customer['Customer Name']}"
-                    show_edit = st.checkbox("✏️ Edit Info", key=edit_info_key)
+                    show_edit = st.checkbox("✏️ Edit Customer Info", key=edit_info_key)
                     
                     if show_edit:
                         col1, col2 = st.columns(2)
