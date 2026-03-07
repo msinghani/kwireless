@@ -541,7 +541,7 @@ with tab1:
                                     st.success("Notes saved!")
                                     st.rerun()
                     with col_notes2:
-                        st.write("📝 **Customer Notes 2:**")
+                        st.write("📝 **Backend Account Info:**")
                         if existing_notes2 and str(existing_notes2) != 'None' and str(existing_notes2).strip():
                             st.info(f"{existing_notes2}")
                         else:
