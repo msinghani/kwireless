@@ -33,6 +33,27 @@ def save_customer_notes(sheet_name, customer_name, notes):
         st.error(f"Error saving notes: {e}")
         return False
 
+
+def save_notes2(sheet_name, customer_name, notes2):
+    """Save customer notes2 to the Excel file"""
+    try:
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[sheet_name]
+        
+        # Find the row with this customer
+        for row in ws.iter_rows(min_row=2):
+            if row[3].value == customer_name:  # Column D is customer name
+                # Update Notes2 column (column M = index 12)
+                row[12].value = notes2
+                break
+        
+        wb.save(EXCEL_FILE)
+        return True
+    except Exception as e:
+        st.error(f"Error saving notes2: {e}")
+        return False
+
+
 def save_due_date(sheet_name, customer_name, due_day):
     """Save customer due date to the Excel file"""
     try:
@@ -230,6 +251,7 @@ def search_customers(all_data, query):
                 'Charge Date': row.get('Charge Date', ''),
                 'Due Day': row.get('Due Day', ''),
                 'Notes': row.get('Notes', ''),
+                'Notes2': row.get('Notes2', ''),
                 'Payment Date': row.get('Payment Date', '')  # Add Payment Date
             })
     
@@ -261,6 +283,7 @@ def get_customers_by_due_day(all_data, due_day):
                     'Charge Date': row.get('Charge Date', ''),
                     'Due Day': row.get('Due Day', ''),
                     'Notes': row.get('Notes', ''),
+                'Notes2': row.get('Notes2', ''),
                     'Payment Date': row.get('Payment Date', '')
                 })
     
@@ -311,6 +334,7 @@ def get_past_due_customers(all_data):
                         'Charge Date': row.get('Charge Date', ''),
                         'Due Day': row.get('Due Day', ''),
                         'Notes': row.get('Notes', ''),
+                'Notes2': row.get('Notes2', ''),
                         'Payment Date': row.get('Payment Date', '')
                     })
     
@@ -504,14 +528,27 @@ with tab1:
                                 st.rerun()
 
                     # Notes section - separate from payment notes
-                    st.write("📝 **Customer Notes:**")
-                    with st.expander("View/Edit Notes"):
-                        notes_key = f"notes_{customer['Service']}_{customer['Customer Name']}"
-                        notes_text = st.text_area("Notes (saved to Excel):", value=str(existing_notes), height=100, key=notes_key)
-                        if st.button("💾 Save Notes", key=f"save_notes_{i}"):
-                            if save_customer_notes(customer['Service'], customer['Customer Name'], notes_text):
-                                st.success("Notes saved!")
-                                st.rerun()
+                    existing_notes2 = customer.get('Notes2', '') or ''
+                    
+                    col_notes1, col_notes2 = st.columns(2)
+                    with col_notes1:
+                        st.write("📝 **Customer Notes:**")
+                        with st.expander("View/Edit Notes"):
+                            notes_key = f"notes_{customer['Service']}_{customer['Customer Name']}"
+                            notes_text = st.text_area("Notes (saved to Excel):", value=str(existing_notes), height=100, key=notes_key)
+                            if st.button("💾 Save Notes", key=f"save_notes_{i}"):
+                                if save_customer_notes(customer['Service'], customer['Customer Name'], notes_text):
+                                    st.success("Notes saved!")
+                                    st.rerun()
+                    with col_notes2:
+                        st.write("📝 **Customer Notes 2:**")
+                        with st.expander("View/Edit Notes2"):
+                            notes2_key = f"notes2_{customer['Service']}_{customer['Customer Name']}"
+                            notes2_text = st.text_area("Notes2 (saved to Excel):", value=str(existing_notes2), height=100, key=notes2_key)
+                            if st.button("💾 Save Notes2", key=f"save_notes2_{i}"):
+                                if save_notes2(customer['Service'], customer['Customer Name'], notes2_text):
+                                    st.success("Notes2 saved!")
+                                    st.rerun()
                     
                     st.divider()
                     
