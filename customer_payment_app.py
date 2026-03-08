@@ -202,6 +202,11 @@ def save_payment(sheet_name, customer_name, payment_amount, notes=""):
                 today = datetime.now().strftime('%Y-%m-%d')
                 row[11].value = today
                 
+                # Set due date to 30 days from payment date
+                from datetime import timedelta
+                new_due_date = (datetime.now() + timedelta(days=30)).day
+                row[12].value = new_due_date  # Column M is Due Day
+                
                 # Update notes in column 10 - append payment info
                 existing_notes = str(row[10].value) if row[10].value else ""
                 payment_info = f"Payment ${payment_amount:.2f} on {today}"
