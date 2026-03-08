@@ -209,7 +209,7 @@ def save_payment(sheet_name, customer_name, payment_amount, notes=""):
                 
                 # Update notes in column 10 - append payment info
                 existing_notes = str(row[10].value) if row[10].value else ""
-                payment_info = f"Payment ${payment_amount:.2f} on {today}"
+                payment_info = f"Payment ${payment_amount:.2f} on {today} at {datetime.now().strftime('%I:%M %p')}"
                 if notes:
                     payment_info += f": {notes}"
                 
