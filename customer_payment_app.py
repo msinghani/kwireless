@@ -6,8 +6,9 @@ A simple interface to look up customers and record payments
 import streamlit as st
 import pandas as pd
 from openpyxl import load_workbook
-from datetime import datetime
-import os
+from datetime import datetime, timedelta
+import json
+import calendar
 
 # Configuration
 EXCEL_FILE = "cleaned_billing_by_service.xlsx"
@@ -117,6 +118,131 @@ def get_balance(customer):
     
     # If Amount Due is empty/invalid, return 0
     return 0
+
+
+def get_balance_aging(customer):
+    """Get balance breakdown by month"""
+    balance_current = customer.get('Balance_Current', 0)
+    balance_history = customer.get('Balance_History', '')
+    
+    aging = {
+        'current': {'label': 'This Month', 'amount': 0},
+        'past': []  # List of {'month': 'Feb 2026', 'amount': 50.00}
+    }
+    
+    # Get current month
+    now = datetime.now()
+    current_month = now.strftime("%b %Y")
+    
+    # Current month balance
+    try:
+        aging['current']['amount'] = float(balance_current) if balance_current else 0
+    except:
+        aging['current']['amount'] = 0
+    
+    # Parse history
+    if balance_history and str(balance_history).strip() and str(balance_history).strip().lower() != 'nan':
+        try:
+            history = json.loads(str(balance_history))
+            for month, amount in history.items():
+                aging['past'].append({'month': month, 'amount': float(amount)})
+        except:
+            pass
+    
+    # Sort past months (newest first)
+    aging['past'].sort(key=lambda x: datetime.strptime(x['month'], "%b %Y"), reverse=True)
+    
+    return aging
+
+
+def calculate_total_balance(aging):
+    """Calculate total from aging breakdown"""
+    total = aging['current']['amount']
+    for past_month in aging['past']:
+        total += past_month['amount']
+    return total
+
+
+def save_balance_by_month(sheet_name, customer_name, month_label, amount, is_current_month=False):
+    """Save balance for a specific month"""
+    try:
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[sheet_name]
+        
+        # Find the row with this customer
+        for row in ws.iter_rows(min_row=2):
+            if row[3].value == customer_name:  # Column D is customer name
+                if is_current_month:
+                    # Update Balance_Current (column 14 = index 13)
+                    row[13].value = amount
+                else:
+                    # Update Balance_History (column 15 = index 14)
+                    existing_history = row[14].value
+                    history = {}
+                    if existing_history and str(existing_history).strip():
+                        try:
+                            history = json.loads(str(existing_history))
+                        except:
+                            history = {}
+                    
+                    history[month_label] = amount
+                    row[14].value = json.dumps(history)
+                
+                # Update total Amount Due
+                # Need to recalculate total
+                break
+        
+        wb.save(EXCEL_FILE)
+        return True
+    except Exception as e:
+        st.error(f"Error saving balance: {e}")
+        return False
+
+
+def update_total_from_aging(sheet_name, customer_name):
+    """Recalculate and update total Amount Due from aging breakdown"""
+    try:
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[sheet_name]
+        
+        for row in ws.iter_rows(min_row=2):
+            if row[3].value == customer_name:
+                # Get Balance_Current (column 14)
+                current = row[13].value
+                try:
+                    current = float(current) if current else 0
+                except:
+                    current = 0
+                
+                # Get Balance_History (column 15)
+                history_str = row[14].value
+                history_total = 0
+                if history_str and str(history_str).strip():
+                    try:
+                        history = json.loads(str(history_str))
+                        history_total = sum(float(v) for v in history.values())
+                    except:
+                        history_total = 0
+                
+                # Update Amount Due (column 8)
+                total = current + history_total
+                row[7].value = total
+                
+                # Update Status
+                if total <= 0:
+                    row[8].value = "Paid"
+                elif total < row[2].value:  # Less than plan cost
+                    row[8].value = "Partial"
+                else:
+                    row[8].value = "Not Paid"
+                
+                break
+        
+        wb.save(EXCEL_FILE)
+        return True
+    except Exception as e:
+        st.error(f"Error updating total: {e}")
+        return False
 
 # Custom styling
 st.markdown("""
@@ -257,7 +383,9 @@ def search_customers(all_data, query):
                 'Due Day': row.get('Due Day', ''),
                 'Notes': row.get('Notes', ''),
                 'Notes2': row.get('Notes2', ''),
-                'Payment Date': row.get('Payment Date', '')  # Add Payment Date
+                'Payment Date': row.get('Payment Date', ''),
+                'Balance_Current': row.get('Balance_Current', 0),
+                'Balance_History': row.get('Balance_History', '')
             })
     
     return results
@@ -289,7 +417,9 @@ def get_customers_by_due_day(all_data, due_day):
                     'Due Day': row.get('Due Day', ''),
                     'Notes': row.get('Notes', ''),
                 'Notes2': row.get('Notes2', ''),
-                    'Payment Date': row.get('Payment Date', '')
+                    'Payment Date': row.get('Payment Date', ''),
+                    'Balance_Current': row.get('Balance_Current', 0),
+                    'Balance_History': row.get('Balance_History', '')
                 })
     
     return results
@@ -340,7 +470,9 @@ def get_past_due_customers(all_data):
                         'Due Day': row.get('Due Day', ''),
                         'Notes': row.get('Notes', ''),
                 'Notes2': row.get('Notes2', ''),
-                        'Payment Date': row.get('Payment Date', '')
+                        'Payment Date': row.get('Payment Date', ''),
+                        'Balance_Current': row.get('Balance_Current', 0),
+                        'Balance_History': row.get('Balance_History', '')
                     })
     
     return results
@@ -479,20 +611,152 @@ with tab1:
                         except:
                             pass
                     
-                    st.markdown(f"""
+                    # Get balance aging breakdown
+                    aging = get_balance_aging(customer)
+                    total_from_aging = calculate_total_balance(aging)
+                    
+                    # Show aging breakdown
+                    st.markdown("""
                     <div class="customer-card">
-                        <h3>{customer['Customer Name']}</h3>
-                        <p><strong>Service:</strong> {customer['Service']} | 
-                           <strong>Phone:</strong> {customer['Phone']} | 
-                           <strong>Status:</strong> {customer['Status']}</p>
-                        <p><strong>💰 Balance:</strong> {balance_display} | 
-                           <strong>Due Date:</strong> {charge_date}</p>
-                        <p><strong>💳 Card:</strong> {customer.get('Card Number', 'N/A')} | 
-                           <strong>Exp:</strong> {customer.get('Exp', 'N/A')} | 
-                           <strong>CVV:</strong> {customer.get('CVV', 'N/A')}</p>
-                        <p><strong>📅 Last Payment:</strong> {payment_date if payment_date else 'N/A'}</p>
+                        <h3>{}</h3>
+                        <p><strong>Service:</strong> {} | 
+                           <strong>Phone:</strong> {} | 
+                           <strong>Status:</strong> {}</p>
+                        <p><strong>💰 Balance:</strong> {} | 
+                           <strong>Due Date:</strong> Charge Date: {} | Due Day: {}</p>
+                        <p><strong>💳 Card:</strong> {} | 
+                           <strong>Exp:</strong> {} | 
+                           <strong>CVV:</strong> {}</p>
+                        <p><strong>📅 Last Payment:</strong> {}</p>
                     </div>
-                    """, unsafe_allow_html=True)
+                    """.format(
+                        customer['Customer Name'],
+                        customer['Service'],
+                        customer['Phone'],
+                        customer['Status'],
+                        balance_display,
+                        charge_date,
+                        customer.get('Due Day', 'N/A'),
+                        customer.get('Card Number', 'N/A'),
+                        customer.get('Exp', 'N/A'),
+                        customer.get('CVV', 'N/A'),
+                        payment_date if payment_date else 'N/A'
+                    ), unsafe_allow_html=True)
+                    
+                    # Balance Aging Section
+                    st.write("### 📊 Balance Aging")
+                    
+                    # Show current month
+                    current_month = datetime.now().strftime("%b %Y")
+                    col_aging1, col_aging2, col_aging3 = st.columns([2, 1, 1])
+                    with col_aging1:
+                        st.write(f"**This Month ({current_month}):**")
+                    with col_aging2:
+                        st.write(f"${aging['current']['amount']:.2f}")
+                    with col_aging3:
+                        pass
+                    
+                    # Show past months
+                    if aging['past']:
+                        for past in aging['past']:
+                            col_aging1, col_aging2, col_aging3 = st.columns([2, 1, 1])
+                            with col_aging1:
+                                st.write(f"**{past['month']}:**")
+                            with col_aging2:
+                                st.write(f"${past['amount']:.2f}")
+                            with col_aging3:
+                                pass
+                    
+                    # Total
+                    st.divider()
+                    col_total1, col_total2 = st.columns([2, 1])
+                    with col_total1:
+                        st.write("**Total Balance:**")
+                    with col_total2:
+                        st.write(f"${total_from_aging:.2f}")
+                    
+                    # Billing Cycle Info
+                    st.write("### 📅 Billing Cycle")
+                    due_day = customer.get('Due Day', 1)
+                    if not due_day or str(due_day) == 'None' or pd.isna(due_day):
+                        due_day = 1
+                    if hasattr(due_day, 'day'):
+                        due_day = due_day.day
+                    st.write(f"Charges on: Day {due_day} of each month")
+                    st.write(f"Payment due: Day {due_day} of each month")
+                    
+                    # Post Payment to Specific Month
+                    st.write("### 💰 Post Payment to Month")
+                    
+                    # Build list of months with balances
+                    month_options = [("This Month", "current", aging['current']['amount'])]
+                    for past in aging['past']:
+                        month_options.append((past['month'], past['month'], past['amount']))
+                    
+                    # Let user select which month to post payment to
+                    col_pay1, col_pay2, col_pay3 = st.columns([2, 1, 1])
+                    with col_pay1:
+                        selected_month_label = st.selectbox(
+                            "Select month to post payment:",
+                            options=[m[0] for m in month_options],
+                            key=f"month_select_{i}"
+                        )
+                    with col_pay2:
+                        # Find selected month's current balance
+                        selected_balance = 0
+                        for m in month_options:
+                            if m[0] == selected_month_label:
+                                selected_balance = m[2]
+                                break
+                        post_amount = st.number_input(
+                            "Amount to post:",
+                            min_value=0.0,
+                            value=float(selected_balance),
+                            step=5.0,
+                            key=f"post_amt_{i}"
+                        )
+                    with col_pay3:
+                        st.write("")
+                        st.write("")
+                        if st.button("✅ Post Payment", key=f"post_pay_{i}"):
+                            if post_amount > 0:
+                                # Determine if current month or past
+                                is_current = selected_month_label == "This Month"
+                                current_month = datetime.now().strftime("%b %Y")
+                                
+                                if is_current:
+                                    # Deduct from Balance_Current
+                                    new_current = aging['current']['amount'] - post_amount
+                                    save_balance_by_month(customer['Service'], customer['Customer Name'], current_month, new_current, is_current_month=True)
+                                else:
+                                    # Deduct from Balance_History
+                                    history = {}
+                                    for past in aging['past']:
+                                        if past['month'] == selected_month_label:
+                                            history[past['month']] = max(0, past['amount'] - post_amount)
+                                        else:
+                                            history[past['month']] = past['amount']
+                                    
+                                    # Save updated history
+                                    try:
+                                        wb = load_workbook(EXCEL_FILE)
+                                        ws = wb[customer['Service']]
+                                        for row in ws.iter_rows(min_row=2):
+                                            if row[3].value == customer['Customer Name']:
+                                                row[14].value = json.dumps(history)
+                                                break
+                                        wb.save(EXCEL_FILE)
+                                    except Exception as e:
+                                        st.error(f"Error: {e}")
+                                
+                                # Update total
+                                update_total_from_aging(customer['Service'], customer['Customer Name'])
+                                st.success(f"Posted ${post_amount:.2f} to {selected_month_label}!")
+                                st.rerun()
+                            else:
+                                st.warning("Enter an amount greater than 0")
+                    
+                    st.divider()
                     
                     # Due Date Edit section
                     st.write("📅 **Due Date:**")
