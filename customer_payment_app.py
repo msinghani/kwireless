@@ -771,7 +771,7 @@ with tab1:
                             current_due_day = int(str(current_due_day).split('-')[-1])
                         except:
                             current_due_day = 1
-                    due_key = f"due_day_{customer['Service']}_{customer['Customer Name']}"
+                    due_key = f"due_day_{customer['Service']}_{customer['Customer Name']}_{i}"
                     new_due_day = st.number_input("Due Day of Month (1-31):", min_value=1, max_value=31, value=int(current_due_day), key=due_key)
                     if st.button("💾 Save Due Date", key=f"save_due_{i}"):
                         if save_due_date(customer['Service'], customer['Customer Name'], new_due_day):
