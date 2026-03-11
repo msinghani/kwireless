@@ -77,55 +77,56 @@ def save_due_date(sheet_name, customer_name, due_day):
 
 def save_customer_info(sheet_name, customer_name, new_name, phone, card_number, exp, cvv, plan_cost, original_phone=None, row_index=None):
     """Save customer info (name, phone, card, plan cost) to the Excel file"""
+    import traceback
+    
     try:
+        print(f"SAVE_DEBUG: Starting save - sheet={sheet_name}, name={customer_name}, new_name={new_name}, row_index={row_index}")
+        
         wb = load_workbook(EXCEL_FILE)
         ws = wb[sheet_name]
         
-        # Normalize phone for comparison (remove decimals, etc)
-        def normalize_phone(p):
-            if p is None or (isinstance(p, float) and pd.isna(p)):
-                return ""
-            return str(p).replace(".0", "").strip()
+        # Direct row access by index
+        target_row = None
         
-        original_phone_normalized = normalize_phone(original_phone)
-        
-        # Find the row with this customer - use phone as secondary match for duplicates
-        saved = False
-        excel_row = row_index + 2 if row_index is not None else 2  # +2 because Excel is 1-indexed and has header
-        
-        # If we have a row index, go directly to that row
         if row_index is not None:
-            row = list(ws.iter_rows(min_row=excel_row, max_row=excel_row))[0]
-            row[3].value = new_name  # Customer Name (Column D)
-            row[9].value = phone     # Phone (Column J)
-            row[4].value = card_number  # Card Number (Column E)
-            row[5].value = exp      # Exp (Column F)
-            row[6].value = cvv       # CVV (Column G)
-            row[2].value = plan_cost  # Plan Cost (Column C)
-            saved = True
+            # Convert pandas index to Excel row (pandas index + 2 because: +1 for header, +1 for 1-based)
+            excel_row_num = row_index + 2
+            print(f"SAVE_DEBUG: Looking for Excel row {excel_row_num}")
+            
+            # Access row directly
+            for row in ws.iter_rows(min_row=excel_row_num, max_row=excel_row_num):
+                target_row = row
+                print(f"SAVE_DEBUG: Found row: {row[3].value}")
+                break
         else:
-            # Fallback to old logic
+            # Fallback: find by name + phone
+            print(f"SAVE_DEBUG: No row_index, using fallback by name")
             for row in ws.iter_rows(min_row=2):
-                if row[3].value == customer_name:
-                    if original_phone_normalized and row[9].value:
-                        stored_phone = normalize_phone(row[9].value)
-                        if stored_phone != original_phone_normalized:
-                            continue
-                    
-                    row[3].value = new_name
-                    row[9].value = phone
-                    row[4].value = card_number
-                    row[5].value = exp
-                    row[6].value = cvv
-                    row[2].value = plan_cost
-                    saved = True
+                if str(row[3].value).strip() == str(customer_name).strip():
+                    target_row = row
+                    print(f"SAVE_DEBUG: Found row by name: {row[3].value}")
                     break
         
-        if saved:
-            wb.save(EXCEL_FILE)
-            return True
-        return False
+        if target_row is None:
+            print("SAVE_DEBUG: No matching row found!")
+            return False
+        
+        # Update all fields
+        target_row[2].value = plan_cost   # Column C - Plan Cost
+        target_row[3].value = new_name    # Column D - Customer Name
+        target_row[4].value = card_number  # Column E - Card Number
+        target_row[5].value = exp        # Column F - Exp
+        target_row[6].value = cvv         # Column G - CVV
+        target_row[9].value = phone       # Column J - Phone
+        
+        print(f"SAVE_DEBUG: Updated row, saving...")
+        wb.save(EXCEL_FILE)
+        print(f"SAVE_DEBUG: Save complete!")
+        return True
+        
     except Exception as e:
+        print(f"SAVE_DEBUG: ERROR - {e}")
+        traceback.print_exc()
         st.error(f"Error saving customer info: {e}")
         return False
 
@@ -830,8 +831,6 @@ with tab1:
                         col_btn1, col_btn2 = st.columns(2)
                         with col_btn1:
                             if st.button("💾 Save Customer Info", key=f"save_info_{i}"):
-                                # Debug: show what's being saved
-                                st.write(f"DEBUG: Saving row {customer.get('row_index')}, name={edit_name}, phone={edit_phone}")
                                 saved = save_customer_info(customer['Service'], customer['Customer Name'], edit_name, edit_phone, edit_card, edit_exp, edit_cvv, edit_plan_cost, original_phone=customer.get('Phone'), row_index=customer.get('row_index'))
                                 if saved:
                                     st.success("Customer info saved!")
