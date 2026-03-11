@@ -830,6 +830,8 @@ with tab1:
                         col_btn1, col_btn2 = st.columns(2)
                         with col_btn1:
                             if st.button("💾 Save Customer Info", key=f"save_info_{i}"):
+                                # Debug: show what's being saved
+                                st.write(f"DEBUG: Saving row {customer.get('row_index')}, name={edit_name}, phone={edit_phone}")
                                 saved = save_customer_info(customer['Service'], customer['Customer Name'], edit_name, edit_phone, edit_card, edit_exp, edit_cvv, edit_plan_cost, original_phone=customer.get('Phone'), row_index=customer.get('row_index'))
                                 if saved:
                                     st.success("Customer info saved!")
