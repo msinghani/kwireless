@@ -81,12 +81,22 @@ def save_customer_info(sheet_name, customer_name, new_name, phone, card_number, 
         wb = load_workbook(EXCEL_FILE)
         ws = wb[sheet_name]
         
+        # Normalize phone for comparison (remove decimals, etc)
+        def normalize_phone(p):
+            if p is None:
+                return ""
+            return str(p).replace(".0", "").strip()
+        
+        original_phone_normalized = normalize_phone(original_phone)
+        
         # Find the row with this customer - use phone as secondary match for duplicates
+        saved = False
         for row in ws.iter_rows(min_row=2):
             if row[3].value == customer_name:  # Column D is customer name
                 # If phone provided, verify it matches
-                if original_phone and row[9].value:
-                    if str(row[9].value) != str(original_phone):
+                if original_phone_normalized and row[9].value:
+                    stored_phone = normalize_phone(row[9].value)
+                    if stored_phone != original_phone_normalized:
                         continue  # Skip this row, it's a different customer with same name
                 
                 # Update columns
@@ -96,10 +106,13 @@ def save_customer_info(sheet_name, customer_name, new_name, phone, card_number, 
                 row[5].value = exp      # Exp (Column F)
                 row[6].value = cvv       # CVV (Column G)
                 row[2].value = plan_cost  # Plan Cost (Column C)
+                saved = True
                 break
         
-        wb.save(EXCEL_FILE)
-        return True
+        if saved:
+            wb.save(EXCEL_FILE)
+            return True
+        return False
     except Exception as e:
         st.error(f"Error saving customer info: {e}")
         return False
@@ -804,9 +817,12 @@ with tab1:
                         col_btn1, col_btn2 = st.columns(2)
                         with col_btn1:
                             if st.button("💾 Save Customer Info", key=f"save_info_{i}"):
-                                if save_customer_info(customer['Service'], customer['Customer Name'], edit_name, edit_phone, edit_card, edit_exp, edit_cvv, edit_plan_cost, original_phone=customer.get('Phone')):
+                                saved = save_customer_info(customer['Service'], customer['Customer Name'], edit_name, edit_phone, edit_card, edit_exp, edit_cvv, edit_plan_cost, original_phone=customer.get('Phone'))
+                                if saved:
                                     st.success("Customer info saved!")
                                     st.rerun()
+                                else:
+                                    st.error("Could not save - customer not found")
                         with col_btn2:
                             pass
 
