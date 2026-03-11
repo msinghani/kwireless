@@ -75,7 +75,7 @@ def save_due_date(sheet_name, customer_name, due_day):
         return False
 
 
-def save_customer_info(sheet_name, customer_name, new_name, phone, card_number, exp, cvv, plan_cost, original_phone=None):
+def save_customer_info(sheet_name, customer_name, new_name, phone, card_number, exp, cvv, plan_cost, original_phone=None, row_index=None):
     """Save customer info (name, phone, card, plan cost) to the Excel file"""
     try:
         wb = load_workbook(EXCEL_FILE)
@@ -83,7 +83,7 @@ def save_customer_info(sheet_name, customer_name, new_name, phone, card_number, 
         
         # Normalize phone for comparison (remove decimals, etc)
         def normalize_phone(p):
-            if p is None:
+            if p is None or (isinstance(p, float) and pd.isna(p)):
                 return ""
             return str(p).replace(".0", "").strip()
         
@@ -91,23 +91,35 @@ def save_customer_info(sheet_name, customer_name, new_name, phone, card_number, 
         
         # Find the row with this customer - use phone as secondary match for duplicates
         saved = False
-        for row in ws.iter_rows(min_row=2):
-            if row[3].value == customer_name:  # Column D is customer name
-                # If phone provided, verify it matches
-                if original_phone_normalized and row[9].value:
-                    stored_phone = normalize_phone(row[9].value)
-                    if stored_phone != original_phone_normalized:
-                        continue  # Skip this row, it's a different customer with same name
-                
-                # Update columns
-                row[3].value = new_name  # Customer Name (Column D)
-                row[9].value = phone     # Phone (Column J)
-                row[4].value = card_number  # Card Number (Column E)
-                row[5].value = exp      # Exp (Column F)
-                row[6].value = cvv       # CVV (Column G)
-                row[2].value = plan_cost  # Plan Cost (Column C)
-                saved = True
-                break
+        excel_row = row_index + 2 if row_index is not None else 2  # +2 because Excel is 1-indexed and has header
+        
+        # If we have a row index, go directly to that row
+        if row_index is not None:
+            row = list(ws.iter_rows(min_row=excel_row, max_row=excel_row))[0]
+            row[3].value = new_name  # Customer Name (Column D)
+            row[9].value = phone     # Phone (Column J)
+            row[4].value = card_number  # Card Number (Column E)
+            row[5].value = exp      # Exp (Column F)
+            row[6].value = cvv       # CVV (Column G)
+            row[2].value = plan_cost  # Plan Cost (Column C)
+            saved = True
+        else:
+            # Fallback to old logic
+            for row in ws.iter_rows(min_row=2):
+                if row[3].value == customer_name:
+                    if original_phone_normalized and row[9].value:
+                        stored_phone = normalize_phone(row[9].value)
+                        if stored_phone != original_phone_normalized:
+                            continue
+                    
+                    row[3].value = new_name
+                    row[9].value = phone
+                    row[4].value = card_number
+                    row[5].value = exp
+                    row[6].value = cvv
+                    row[2].value = plan_cost
+                    saved = True
+                    break
         
         if saved:
             wb.save(EXCEL_FILE)
@@ -386,9 +398,10 @@ def search_customers(all_data, query):
         )
         
         matches = df[mask]
-        for _, row in matches.iterrows():
+        for idx, row in matches.iterrows():
             results.append({
                 'Service': service,
+                'row_index': idx,  # Store pandas index for saving
                 'Customer Name': row.get('Customer Name', ''),
                 'Phone': row.get('Phone', ''),
                 'Amount Due': row.get('Amount Due', ''),
@@ -817,7 +830,7 @@ with tab1:
                         col_btn1, col_btn2 = st.columns(2)
                         with col_btn1:
                             if st.button("💾 Save Customer Info", key=f"save_info_{i}"):
-                                saved = save_customer_info(customer['Service'], customer['Customer Name'], edit_name, edit_phone, edit_card, edit_exp, edit_cvv, edit_plan_cost, original_phone=customer.get('Phone'))
+                                saved = save_customer_info(customer['Service'], customer['Customer Name'], edit_name, edit_phone, edit_card, edit_exp, edit_cvv, edit_plan_cost, original_phone=customer.get('Phone'), row_index=customer.get('row_index'))
                                 if saved:
                                     st.success("Customer info saved!")
                                     st.rerun()
