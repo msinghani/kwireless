@@ -10,8 +10,15 @@ from datetime import datetime, timedelta
 import json
 import calendar
 
+import os
+
 # Configuration
 EXCEL_FILE = "cleaned_billing_by_service.xlsx"
+
+# Use persistent disk on Render, or local file for development
+RENDER_DISK_PATH = "/app/data"
+if os.path.exists(RENDER_DISK_PATH):
+    EXCEL_FILE = os.path.join(RENDER_DISK_PATH, "cleaned_billing_by_service.xlsx")
 
 st.set_page_config(page_title="Customer Payment Manager", page_icon="💳", layout="wide")
 
@@ -1185,10 +1192,11 @@ with st.expander("Upload New Database"):
     uploaded_file = st.file_uploader("Choose Excel file", type=['xlsx'])
     if uploaded_file is not None:
         if st.button("Replace Database"):
-            # Save the uploaded file
-            with open(EXCEL_FILE, 'wb') as f:
+            # Save the uploaded file to persistent location
+            target_path = EXCEL_FILE
+            with open(target_path, 'wb') as f:
                 f.write(uploaded_file.getbuffer())
-            st.success("Database replaced! Restarting...")
+            st.success(f"Database replaced at {target_path}! Restarting...")
             st.rerun()
 
 # Footer
