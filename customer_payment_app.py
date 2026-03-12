@@ -13,7 +13,53 @@ import calendar
 import os
 
 # Configuration
-EXCEL_FILE_LOCAL = "cleaned_billing_by_service.xlsx"
+EXCEL_FILE_LOCAL
+# === NEW 12-MONTH AGING SYSTEM ===
+MONTHS_2026 = ['Jan_2026', 'Feb_2026', 'Mar_2026', 'Apr_2026', 'May_2026', 'Jun_2026', 
+               'Jul_2026', 'Aug_2026', 'Sep_2026', 'Oct_2026', 'Nov_2026', 'Dec_2026']
+
+def get_monthly_balances(customer):
+    """Get all 12 monthly balances from customer data"""
+    balances = {}
+    for month in MONTHS_2026:
+        val = customer.get(month, 0)
+        try:
+            balances[month] = float(val) if val else 0
+        except:
+            balances[month] = 0
+    return balances
+
+def get_total_balance_from_months(balances):
+    """Calculate total from all monthly balances"""
+    return sum(balances.values())
+
+def save_monthly_balance(sheet_name, customer_name, month_label, amount):
+    """Save balance for a specific month"""
+    try:
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[sheet_name]
+        
+        # Find the column index for this month
+        month_col_idx = None
+        for col_idx, col in enumerate(ws[1], start=1):
+            if col.value == month_label:
+                month_col_idx = col_idx
+                break
+        
+        if month_col_idx is None:
+            return False
+        
+        # Find the row and update
+        for row in ws.iter_rows(min_row=2):
+            if row[3].value == customer_name:
+                row[month_col_idx - 1].value = amount
+                break
+        
+        wb.save(EXCEL_FILE)
+        return True
+    except Exception as e:
+        return False
+ = "cleaned_billing_by_service.xlsx"
 
 # Use persistent disk on Render, or local file for development
 RENDER_DISK_PATH = "/app/data"
@@ -432,9 +478,31 @@ def search_customers(all_data, query):
                 'Notes': row.get('Notes', ''),
                 'Notes2': row.get('Notes2', ''),
                 'Payment Date': row.get('Payment Date', ''),
-                'Balance_Current': row.get('Balance_Current', 0),
-                'Balance_History': row.get('Balance_History', '')
             })
+                # Add monthly balances
+                monthly_balances = {}
+                for month in MONTHS_2026:
+                    monthly_balances[month] = row.get(month, 0)
+                
+                result_dict = {
+                    'Service': service,
+                    'row_index': idx,
+                    'Customer Name': row.get('Customer Name', ''),
+                    'Phone': row.get('Phone', ''),
+                    'Amount Due': row.get('Amount Due', ''),
+                    'Status': row.get('Status', ''),
+                    'Card Number': row.get('Card Number', ''),
+                    'Exp': row.get('Exp', ''),
+                    'CVV': row.get('CVV', ''),
+                    'Plan Cost': row.get('Plan Cost', ''),
+                    'Charge Date': row.get('Charge Date', ''),
+                    'Due Day': row.get('Due Day', ''),
+                    'Notes': row.get('Notes', ''),
+                    'Notes2': row.get('Notes2', ''),
+                    'Payment Date': row.get('Payment Date', ''),
+                }
+                result_dict.update(monthly_balances)
+                results.append(result_dict)
     
     return results
 
@@ -691,82 +759,70 @@ with tab1:
                         payment_date if payment_date else 'N/A'
                     ), unsafe_allow_html=True)
                     
-                    # Balance Aging Section
-                    st.write("### 📊 Balance Aging")
+                    # === NEW 12-MONTH AGING SYSTEM ===
+                    st.write("### 📊 Monthly Balance (2026)")
                     
-                    # Show current month
-                    current_month = datetime.now().strftime("%b %Y")
-                    col_aging1, col_aging2, col_aging3 = st.columns([2, 1, 1])
-                    with col_aging1:
-                        st.write(f"**This Month ({current_month}):**")
-                    with col_aging2:
-                        st.write(f"${aging['current']['amount']:.2f}")
-                    with col_aging3:
-                        pass
+                    # Get monthly balances
+                    monthly_balances = get_monthly_balances(customer)
                     
-                    # Show past months
-                    if aging['past']:
-                        for past in aging['past']:
-                            col_aging1, col_aging2, col_aging3 = st.columns([2, 1, 1])
-                            with col_aging1:
-                                st.write(f"**{past['month']}:**")
-                            with col_aging2:
-                                st.write(f"${past['amount']:.2f}")
-                            with col_aging3:
-                                pass
+                    # Calculate total
+                    total_balance = get_total_balance_from_months(monthly_balances)
+                    
+                    # Display all 12 months in a grid
+                    months_list = [
+                        ('Jan_2026', 'January'), ('Feb_2026', 'February'), ('Mar_2026', 'March'),
+                        ('Apr_2026', 'April'), ('May_2026', 'May'), ('Jun_2026', 'June'),
+                        ('Jul_2026', 'July'), ('Aug_2026', 'August'), ('Sep_2026', 'September'),
+                        ('Oct_2026', 'October'), ('Nov_2026', 'November'), ('Dec_2026', 'December')
+                    ]
+                    
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        for month_col, month_name in months_list[:4]:
+                            val = monthly_balances.get(month_col, 0)
+                            st.metric(month_name, f"${val:.2f}")
+                    
+                    with col2:
+                        for month_col, month_name in months_list[4:8]:
+                            val = monthly_balances.get(month_col, 0)
+                            st.metric(month_name, f"${val:.2f}")
+                    
+                    with col3:
+                        for month_col, month_name in months_list[8:]:
+                            val = monthly_balances.get(month_col, 0)
+                            st.metric(month_name, f"${val:.2f}")
                     
                     # Total
                     st.divider()
-                    col_total1, col_total2 = st.columns([2, 1])
-                    with col_total1:
-                        st.write("**Total Balance:**")
-                    with col_total2:
-                        st.write(f"${total_from_aging:.2f}")
+                    st.metric("💰 Total Balance", f"${total_balance:.2f}")
                     
-                    # Billing Cycle Info
-                    st.write("### 📅 Billing Cycle")
-                    due_day = customer.get('Due Day', 1)
-                    if not due_day or str(due_day) == 'None' or pd.isna(due_day):
-                        due_day = 1
-                    if hasattr(due_day, 'day'):
-                        due_day = due_day.day
-                    st.write(f"Charges on: Day {due_day} of each month")
-                    st.write(f"Payment due: Day {due_day} of each month")
+                    # Edit specific month
+                    st.write("### ✏️ Edit Monthly Balance")
                     
-                    # Post Payment to Specific Month
-                    st.write("### 💰 Post Payment to Month")
-                    
-                    # Build list of months with balances
-                    month_options = [("This Month", "current", aging['current']['amount'])]
-                    for past in aging['past']:
-                        month_options.append((past['month'], past['month'], past['amount']))
-                    
-                    # Let user select which month to post payment to
-                    col_pay1, col_pay2, col_pay3 = st.columns([2, 1, 1])
-                    with col_pay1:
-                        selected_month_label = st.selectbox(
-                            "Select month to post payment:",
-                            options=[m[0] for m in month_options],
-                            key=f"month_select_{i}"
+                    col_edit1, col_edit2 = st.columns(2)
+                    with col_edit1:
+                        edit_month = st.selectbox(
+                            "Select Month:",
+                            options=[m[0] for m in months_list],
+                            key=f"edit_month_{i}"
                         )
-                    with col_pay2:
-                        # Find selected month's current balance
-                        selected_balance = 0
-                        for m in month_options:
-                            if m[0] == selected_month_label:
-                                selected_balance = m[2]
-                                break
-                        post_amount = st.number_input(
-                            "Amount to post:",
+                    with col_edit2:
+                        current_val = monthly_balances.get(edit_month, 0)
+                        new_val = st.number_input(
+                            "New Balance:",
                             min_value=0.0,
-                            value=float(selected_balance),
+                            value=float(current_val),
                             step=5.0,
-                            key=f"post_amt_{i}"
+                            key=f"edit_val_{i}"
                         )
-                    with col_pay3:
-                        st.write("")
-                        st.write("")
-                        if st.button("✅ Post Payment", key=f"post_pay_{i}"):
+                    
+                    if st.button(f"💾 Save {edit_month}", key=f"save_{i}"):
+                        if save_monthly_balance(customer['Service'], customer['Customer Name'], edit_month, new_val):
+                            st.success(f"Saved!")
+                            st.rerun()
+                        else:
+                            st.error("Error saving!")
                             if post_amount > 0:
                                 # Determine if current month or past
                                 is_current = selected_month_label == "This Month"
@@ -1245,4 +1301,4 @@ with col2:
 
 # Footer
 st.divider()
-st.caption(f"💾 Data file: {EXCEL_FILE}")
+st.caption(f"💾 Data file: {EXCEL_FILE}"))
