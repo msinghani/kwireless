@@ -1213,6 +1213,36 @@ with st.expander("Upload New Database"):
             st.success(f"Database saved to {target_path}! Restarting...")
             st.rerun()
 
+# === DOWNLOAD/UPLOAD DATABASE ===
+st.divider()
+st.header("💾 Download/Upload Database")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    # Download button
+    try:
+        with open("/opt/render/project/src/cleaned_billing_by_service.xlsx", "rb") as f:
+            st.download_button(
+                label="📥 Download Excel File",
+                data=f,
+                file_name="cleaned_billing_by_service.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+    except:
+        st.warning("File not found on server")
+
+with col2:
+    # Upload button
+    uploaded_file = st.file_uploader("📤 Upload Updated Excel File", type=["xlsx"])
+    if uploaded_file is not None:
+        try:
+            with open("/opt/render/project/src/cleaned_billing_by_service.xlsx", "wb") as f:
+                f.write(uploaded_file.getbuffer())
+            st.success("✅ File uploaded! Refresh the page.")
+        except Exception as e:
+            st.error(f"Error: {e}")
+
 # Footer
 st.divider()
 st.caption(f"💾 Data file: {EXCEL_FILE}")
