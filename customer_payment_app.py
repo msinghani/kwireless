@@ -12,14 +12,12 @@ import calendar
 
 import os
 
-# Configuration
-EXCEL_FILE_LOCAL
 # === NEW 12-MONTH AGING SYSTEM ===
 MONTHS_2026 = ['Jan_2026', 'Feb_2026', 'Mar_2026', 'Apr_2026', 'May_2026', 'Jun_2026', 
                'Jul_2026', 'Aug_2026', 'Sep_2026', 'Oct_2026', 'Nov_2026', 'Dec_2026']
 
 def get_monthly_balances(customer):
-    """Get all 12 monthly balances from customer data"""
+    """Get all 12 monthly balances"""
     balances = {}
     for month in MONTHS_2026:
         val = customer.get(month, 0)
@@ -38,28 +36,24 @@ def save_monthly_balance(sheet_name, customer_name, month_label, amount):
     try:
         wb = load_workbook(EXCEL_FILE)
         ws = wb[sheet_name]
-        
-        # Find the column index for this month
         month_col_idx = None
         for col_idx, col in enumerate(ws[1], start=1):
             if col.value == month_label:
                 month_col_idx = col_idx
                 break
-        
         if month_col_idx is None:
             return False
-        
-        # Find the row and update
         for row in ws.iter_rows(min_row=2):
             if row[3].value == customer_name:
                 row[month_col_idx - 1].value = amount
                 break
-        
         wb.save(EXCEL_FILE)
         return True
-    except Exception as e:
+    except:
         return False
- = "cleaned_billing_by_service.xlsx"
+
+# Configuration
+EXCEL_FILE_LOCAL = "cleaned_billing_by_service.xlsx"
 
 # Use persistent disk on Render, or local file for development
 RENDER_DISK_PATH = "/app/data"
@@ -764,8 +758,6 @@ with tab1:
                     
                     # Get monthly balances
                     monthly_balances = get_monthly_balances(customer)
-                    
-                    # Calculate total
                     total_balance = get_total_balance_from_months(monthly_balances)
                     
                     # Display all 12 months in a grid
@@ -819,7 +811,7 @@ with tab1:
                     
                     if st.button(f"💾 Save {edit_month}", key=f"save_{i}"):
                         if save_monthly_balance(customer['Service'], customer['Customer Name'], edit_month, new_val):
-                            st.success(f"Saved!")
+                            st.success("Saved!")
                             st.rerun()
                         else:
                             st.error("Error saving!")
@@ -1301,4 +1293,4 @@ with col2:
 
 # Footer
 st.divider()
-st.caption(f"💾 Data file: {EXCEL_FILE}"))
+st.caption(f"💾 Data file: {EXCEL_FILE}")
