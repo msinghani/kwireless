@@ -13,12 +13,21 @@ import calendar
 import os
 
 # Configuration
-EXCEL_FILE = "cleaned_billing_by_service.xlsx"
+EXCEL_FILE_LOCAL = "cleaned_billing_by_service.xlsx"
 
 # Use persistent disk on Render, or local file for development
 RENDER_DISK_PATH = "/app/data"
 if os.path.exists(RENDER_DISK_PATH):
-    EXCEL_FILE = os.path.join(RENDER_DISK_PATH, "cleaned_billing_by_service.xlsx")
+    # Check if file exists on persistent disk
+    disk_file = os.path.join(RENDER_DISK_PATH, "cleaned_billing_by_service.xlsx")
+    if os.path.exists(disk_file):
+        EXCEL_FILE = disk_file
+    else:
+        # Disk exists but no file yet - use local path (will prompt upload)
+        EXCEL_FILE = EXCEL_FILE_LOCAL
+else:
+    # Not on Render (local development)
+    EXCEL_FILE = EXCEL_FILE_LOCAL
 
 st.set_page_config(page_title="Customer Payment Manager", page_icon="💳", layout="wide")
 
@@ -1188,15 +1197,20 @@ with tab4:
 st.divider()
 st.header("🗄️ Database Management")
 
+# Show where data is being stored
+st.info(f"📁 Data file location: `{EXCEL_FILE}`")
+
 with st.expander("Upload New Database"):
+    st.write("Upload your Excel file. It will be saved to the persistent disk.")
     uploaded_file = st.file_uploader("Choose Excel file", type=['xlsx'])
     if uploaded_file is not None:
         if st.button("Replace Database"):
-            # Save the uploaded file to persistent location
-            target_path = EXCEL_FILE
+            # Save to persistent disk path
+            target_path = os.path.join(RENDER_DISK_PATH, "cleaned_billing_by_service.xlsx") if os.path.exists(RENDER_DISK_PATH) else EXCEL_FILE
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
             with open(target_path, 'wb') as f:
                 f.write(uploaded_file.getbuffer())
-            st.success(f"Database replaced at {target_path}! Restarting...")
+            st.success(f"Database saved to {target_path}! Restarting...")
             st.rerun()
 
 # Footer
