@@ -17,7 +17,6 @@ MONTHS_2026 = ['Jan_2026', 'Feb_2026', 'Mar_2026', 'Apr_2026', 'May_2026', 'Jun_
                'Jul_2026', 'Aug_2026', 'Sep_2026', 'Oct_2026', 'Nov_2026', 'Dec_2026']
 
 def get_monthly_balances(customer):
-    """Get all 12 monthly balances"""
     balances = {}
     for month in MONTHS_2026:
         val = customer.get(month, 0)
@@ -28,11 +27,9 @@ def get_monthly_balances(customer):
     return balances
 
 def get_total_balance_from_months(balances):
-    """Calculate total from all monthly balances"""
     return sum(balances.values())
 
 def save_monthly_balance(sheet_name, customer_name, month_label, amount):
-    """Save balance for a specific month"""
     try:
         wb = load_workbook(EXCEL_FILE)
         ws = wb[sheet_name]
@@ -533,7 +530,18 @@ def get_customers_by_due_day(all_data, due_day):
                 })
     
     return results
-
+                    'Jan_2026': row.get('Jan_2026', 0),
+                    'Feb_2026': row.get('Feb_2026', 0),
+                    'Mar_2026': row.get('Mar_2026', 0),
+                    'Apr_2026': row.get('Apr_2026', 0),
+                    'May_2026': row.get('May_2026', 0),
+                    'Jun_2026': row.get('Jun_2026', 0),
+                    'Jul_2026': row.get('Jul_2026', 0),
+                    'Aug_2026': row.get('Aug_2026', 0),
+                    'Sep_2026': row.get('Sep_2026', 0),
+                    'Oct_2026': row.get('Oct_2026', 0),
+                    'Nov_2026': row.get('Nov_2026', 0),
+                    'Dec_2026': row.get('Dec_2026', 0),
 def get_past_due_customers(all_data):
     """Get all customers who are past due (not paid and have an amount due)"""
     from datetime import datetime
@@ -722,8 +730,8 @@ with tab1:
                             pass
                     
                     # Get balance aging breakdown
-                    aging = get_balance_aging(customer)
-                    total_from_aging = calculate_total_balance(aging)
+                    monthly_balances = get_monthly_balances(customer)
+                    total_from_aging = get_total_balance_from_months(monthly_balances)
                     
                     # Show aging breakdown
                     st.markdown("""
