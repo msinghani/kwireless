@@ -29,6 +29,30 @@ def get_monthly_balances(customer):
 def get_total_balance_from_months(balances):
     return sum(balances.values())
 
+def update_amount_due_from_months(sheet_name, customer_name):
+    """Update the Amount Due column (H) with sum of all 12 months (N-Y)"""
+    try:
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[sheet_name]
+        
+        for row in ws.iter_rows(min_row=2):
+            if row[3].value == customer_name:
+                total = 0
+                for col_idx in range(13, 25):
+                    try:
+                        val = row[col_idx].value
+                        if val:
+                            total += float(val)
+                    except:
+                        pass
+                row[7].value = total
+                break
+        
+        wb.save(EXCEL_FILE)
+        return True
+    except Exception as e:
+        return False
+      
 def save_monthly_balance(sheet_name, customer_name, month_label, amount):
     try:
         wb = load_workbook(EXCEL_FILE)
