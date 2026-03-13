@@ -137,7 +137,19 @@ def save_customer_info(sheet_name, customer_name, new_name, phone, card_number, 
         return False
 
 def get_balance(customer):
+    # First check if Amount Due column has value, otherwise calculate from monthly
     amount_due = customer.get('Amount Due', '')
+    
+    # If Amount Due is empty/0, calculate from monthly balances
+    if not amount_due or str(amount_due).strip() == '' or str(amount_due).strip().lower() == 'nan':
+        total = 0
+        for month in MONTHS_2026:
+            val = customer.get(month, 0)
+            try:
+                total += float(val) if val else 0
+            except:
+                pass
+        return total
     if amount_due and str(amount_due).strip() and str(amount_due).strip().lower() != 'nan':
         try:
             val = float(str(amount_due).strip())
@@ -463,10 +475,31 @@ with tab1:
                     
                     if st.button(f"💾 Save {edit_month}", key=f"save_{i}"):
                         if save_monthly_balance(customer['Service'], customer['Customer Name'], edit_month, new_val):
+                            # Also update total Amount Due
+                            update_amount_due_from_months(customer['Service'], customer['Customer Name'])
                             st.success("Saved!")
                             st.rerun()
                         else:
                             st.error("Error saving!")
+                    
+                    # Post payment to specific month
+                    st.write("### 💰 Post Payment to Month")
+                    col_pay1, col_pay2 = st.columns(2)
+                    with col_pay1:
+                        pay_month = st.selectbox("Select Month to Pay:", options=[m[0] for m in months_list], key=f"pay_month_{i}")
+                    with col_pay2:
+                        pay_amount = st.number_input("Payment Amount:", min_value=0.0, value=float(monthly_balances.get(pay_month, 0)), step=5.0, key=f"pay_amt_{i}")
+                    
+                    if st.button(f"✅ Apply Payment to {pay_month}", key=f"apply_pay_{i}"):
+                        if pay_amount > 0:
+                            current = monthly_balances.get(pay_month, 0)
+                            new_balance = max(0, current - pay_amount)
+                            if save_monthly_balance(customer['Service'], customer['Customer Name'], pay_month, new_balance):
+                                update_amount_due_from_months(customer['Service'], customer['Customer Name'])
+                                st.success(f"Payment applied to {pay_month}!")
+                                st.rerun()
+                            else:
+                                st.error("Error applying payment!")
                     
                     with st.expander("💳 Edit Customer Info"):
                         with st.form(f"edit_form_{i}"):
