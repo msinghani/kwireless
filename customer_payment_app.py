@@ -351,6 +351,7 @@ def auto_charge_due_today():
             
             headers = {col.value: idx for idx, col in enumerate(ws[1], start=1)}
             due_day_col = headers.get('Due Day')
+            plan_cost_col = headers.get('Plan Cost')
             amount_due_col = headers.get('Amount Due')
             month_col = headers.get(month_key)
             
@@ -362,21 +363,20 @@ def auto_charge_due_today():
                     max_col += 1
                 headers = {col.value: idx for idx, col in enumerate(ws[1], start=1)}
                 due_day_col = headers.get('Due Day')
+                plan_cost_col = headers.get('Plan Cost')
                 amount_due_col = headers.get('Amount Due')
                 month_col = headers.get(month_key)
             
-            if not all([due_day_col, month_col]):
+            if not all([due_day_col, plan_cost_col, month_col]):
                 continue
             
             for row in ws.iter_rows(min_row=2):
                 due_day = row[due_day_col - 1].value
-                amount_due = row[amount_due_col - 1].value if amount_due_col else None
+                plan_cost = row[plan_cost_col - 1].value if plan_cost_col else None
                 customer_name = row[3].value
                 current_month_val = row[month_col - 1].value
                 
-                debug_info.append(f"Row: {customer_name} - due_day={due_day}(type={type(due_day)}), current_day={current_day}, amount_due={amount_due}")
-                
-                # Compare as integers to handle string vs int
+                # Compare as integers
                 try:
                     due_day_int = int(due_day) if due_day else None
                 except:
@@ -384,12 +384,11 @@ def auto_charge_due_today():
                 
                 if due_day_int == current_day:
                     try:
-                        charge_amount = float(amount_due) if amount_due else 0
-                        debug_info.append(f"Found {customer_name}: due_day={due_day}, amount_due={amount_due}, charge_amount={charge_amount}")
-                        # Charge regardless of current value - just add the amount due
+                        # Use Plan Cost as the charge amount
+                        charge_amount = float(plan_cost) if plan_cost else 0
+                        
                         if charge_amount > 0:
-                            debug_info.append(f"  -> Charging {customer_name} with ${charge_amount}")
-                            # Add to existing balance (or set if empty)
+                            # Add to existing balance
                             current_val = float(current_month_val) if current_month_val else 0
                             new_val = current_val + charge_amount
                             row[month_col - 1].value = new_val
@@ -423,8 +422,6 @@ def auto_charge_due_today():
                         pass
         
         wb.save(EXCEL_FILE)
-        if not charged:
-            return debug_info
         return charged
     except Exception as e:
         return [f"Error: {str(e)}"]
@@ -570,15 +567,9 @@ with st.expander("⚡ Auto-Charge Due Today"):
         with st.spinner("Charging customers..."):
             results = auto_charge_due_today()
             if results:
-                # Check if debug info
-                if any("Today:" in str(r) or "EXCEL_FILE" in str(r) for r in results):
-                    st.warning("Debug info:")
-                    for r in results:
-                        st.caption(r)
-                else:
-                    st.success(f"Charged {len(results)} customer(s)!")
-                    for r in results:
-                        st.write(f"• {r}")
+                st.success(f"Charged {len(results)} customer(s)!")
+                for r in results:
+                    st.write(f"• {r}")
             else:
                 st.info("No customers to charge today")
 
