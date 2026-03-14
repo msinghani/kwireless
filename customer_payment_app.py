@@ -547,7 +547,10 @@ with tab2:
         customers = get_customers_by_due_day(all_data, due_day)
         st.write(f"Found **{len(customers)}** customers due on day {due_day}")
         for c in customers:
-            st.write(f"- {c['Customer Name']} ({c['Service']}): ${c.get('Amount Due', 0)}")
+            card = c.get('Card Number', '')
+            exp = c.get('Exp', '')
+            cvv = c.get('CVV', '')
+            st.write(f"- **{c['Customer Name']}** ({c['Service']}) | Balance: ${c.get('Amount Due', 0)} | Card: {card} | Exp: {exp} | CVV: {cvv}")
 
 with tab3:
     past_due = get_past_due_customers(all_data)
