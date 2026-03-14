@@ -382,6 +382,20 @@ def auto_charge_due_today():
                             if amount_due_col:
                                 row[amount_due_col - 1].value = total
                             
+                            # Advance due date by 30 days
+                            current_due = row[due_day_col - 1].value
+                            if current_due:
+                                try:
+                                    current_due = int(current_due)
+                                    new_due = current_due + 30
+                                    if new_due > 31:
+                                        new_due = new_due % 30
+                                        if new_due == 0:
+                                            new_due = 30
+                                    row[due_day_col - 1].value = new_due
+                                except:
+                                    pass
+                            
                             charged.append(f"{customer_name} ({sheet_name}): ${charge_amount}")
                     except:
                         pass
