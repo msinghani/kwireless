@@ -332,6 +332,7 @@ def auto_charge_due_today():
     month_key = MONTH_MAP.get(current_month, 'Mar_2026')
     
     charged = []
+    debug_info = []
     try:
         wb = load_workbook(EXCEL_FILE)
         
@@ -368,8 +369,10 @@ def auto_charge_due_today():
                 if due_day == current_day:
                     try:
                         charge_amount = float(amount_due) if amount_due else 0
+                        debug_info.append(f"Found {customer_name}: due_day={due_day}, amount_due={amount_due}, charge_amount={charge_amount}")
                         # Charge regardless of current value - just add the amount due
                         if charge_amount > 0:
+                            debug_info.append(f"  -> Charging {customer_name} with ${charge_amount}")
                             # Add to existing balance (or set if empty)
                             current_val = float(current_month_val) if current_month_val else 0
                             new_val = current_val + charge_amount
@@ -404,6 +407,8 @@ def auto_charge_due_today():
                         pass
         
         wb.save(EXCEL_FILE)
+        if not charged:
+            return debug_info
         return charged
     except Exception as e:
         return [f"Error: {str(e)}"]
