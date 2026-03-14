@@ -331,8 +331,8 @@ def auto_charge_due_today():
     
     month_key = MONTH_MAP.get(current_month, 'Mar_2026')
     
+    debug_info = [f"Today: day={current_day}, month={current_month}, month_key={month_key}", f"EXCEL_FILE: {EXCEL_FILE}"]
     charged = []
-    debug_info = []
     try:
         wb = load_workbook(EXCEL_FILE)
         
@@ -554,9 +554,15 @@ with st.expander("⚡ Auto-Charge Due Today"):
         with st.spinner("Charging customers..."):
             results = auto_charge_due_today()
             if results:
-                st.success(f"Charged {len(results)} customer(s)!")
-                for r in results:
-                    st.write(f"• {r}")
+                # Check if debug info
+                if any("Today:" in str(r) or "EXCEL_FILE" in str(r) for r in results):
+                    st.warning("Debug info:")
+                    for r in results:
+                        st.caption(r)
+                else:
+                    st.success(f"Charged {len(results)} customer(s)!")
+                    for r in results:
+                        st.write(f"• {r}")
             else:
                 st.info("No customers to charge today")
 
