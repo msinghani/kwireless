@@ -556,7 +556,10 @@ with tab3:
     past_due = get_past_due_customers(all_data)
     st.write(f"Found **{len(past_due)}** past due customers")
     for c in past_due:
-        st.write(f"- {c['Customer Name']} ({c['Service']}): ${c.get('Amount Due', 0)}")
+        card = c.get('Card Number', '')
+        exp = c.get('Exp', '')
+        cvv = c.get('CVV', '')
+        st.write(f"- **{c['Customer Name']}** ({c['Service']}) | Balance: ${c.get('Amount Due', 0)} | Card: {card} | Exp: {exp} | CVV: {cvv}")
 
 with tab4:
     col1, col2 = st.columns(2)
