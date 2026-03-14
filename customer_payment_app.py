@@ -368,9 +368,12 @@ def auto_charge_due_today():
                 if due_day == current_day:
                     try:
                         charge_amount = float(amount_due) if amount_due else 0
-                        current_val = float(current_month_val) if current_month_val else 0
-                        if current_val == 0 and charge_amount > 0:
-                            row[month_col - 1].value = charge_amount
+                        # Charge regardless of current value - just add the amount due
+                        if charge_amount > 0:
+                            # Add to existing balance (or set if empty)
+                            current_val = float(current_month_val) if current_month_val else 0
+                            new_val = current_val + charge_amount
+                            row[month_col - 1].value = new_val
                             
                             # Update amount due (sum all months)
                             total = 0
