@@ -85,12 +85,20 @@ EXCEL_FILE_LOCAL = "cleaned_billing_by_service.xlsx"
 
 # Use persistent disk on Render, or local file for development
 RENDER_DISK_PATH = "/app/data"
+RENDER_SRC_PATH = "/opt/render/project/src"
 if os.path.exists(RENDER_DISK_PATH):
     disk_file = os.path.join(RENDER_DISK_PATH, "cleaned_billing_by_service.xlsx")
     if os.path.exists(disk_file):
         EXCEL_FILE = disk_file
     else:
-        EXCEL_FILE = EXCEL_FILE_LOCAL
+        # Check alternate location where uploads go
+        src_file = os.path.join(RENDER_SRC_PATH, "cleaned_billing_by_service.xlsx")
+        if os.path.exists(src_file):
+            EXCEL_FILE = src_file
+        else:
+            EXCEL_FILE = EXCEL_FILE_LOCAL
+elif os.path.exists(RENDER_SRC_PATH):
+    EXCEL_FILE = os.path.join(RENDER_SRC_PATH, "cleaned_billing_by_service.xlsx")
 else:
     EXCEL_FILE = EXCEL_FILE_LOCAL
 
