@@ -16,6 +16,13 @@ import os
 MONTHS_2026 = ['Jan_2026', 'Feb_2026', 'Mar_2026', 'Apr_2026', 'May_2026', 'Jun_2026', 
                'Jul_2026', 'Aug_2026', 'Sep_2026', 'Oct_2026', 'Nov_2026', 'Dec_2026']
 
+# Map month number to column name
+MONTH_MAP = {
+    1: 'Jan_2026', 2: 'Feb_2026', 3: 'Mar_2026', 4: 'Apr_2026',
+    5: 'May_2026', 6: 'Jun_2026', 7: 'Jul_2026', 8: 'Aug_2026',
+    9: 'Sep_2026', 10: 'Oct_2026', 11: 'Nov_2026', 12: 'Dec_2026'
+}
+
 def get_monthly_balances(customer):
     balances = {}
     for month in MONTHS_2026:
@@ -316,6 +323,107 @@ def get_customers_by_due_day(all_data, due_day):
                 results.append(result)
     return results
 
+def auto_charge_due_today():
+    """Auto-charge all customers whose due date matches today"""
+    today = datetime.now()
+    current_day = today.day
+    current_month = today.month
+    
+    month_key = MONTH_MAP.get(current_month, 'Mar_2026')
+    
+    charged = []
+    try:
+        wb = load_workbook(EXCEL_FILE)
+        
+        for sheet_name in wb.sheetnames:
+            if sheet_name == 'Summary':
+                continue
+            ws = wb[sheet_name]
+            
+            headers = {col.value: idx for idx, col in enumerate(ws[1], start=1)}
+            due_day_col = headers.get('Due Day')
+            amount_due_col = headers.get('Amount Due')
+            month_col = headers.get(month_key)
+            
+            # Add month columns if they don't exist
+            if month_col is None:
+                max_col = ws.max_column
+                for m in MONTHS_2026:
+                    ws.cell(row=1, column=max_col + 1, value=m)
+                    max_col += 1
+                headers = {col.value: idx for idx, col in enumerate(ws[1], start=1)}
+                due_day_col = headers.get('Due Day')
+                amount_due_col = headers.get('Amount Due')
+                month_col = headers.get(month_key)
+            
+            if not all([due_day_col, month_col]):
+                continue
+            
+            for row in ws.iter_rows(min_row=2):
+                due_day = row[due_day_col - 1].value
+                amount_due = row[amount_due_col - 1].value if amount_due_col else None
+                customer_name = row[3].value
+                current_month_val = row[month_col - 1].value
+                
+                if due_day == current_day:
+                    try:
+                        charge_amount = float(amount_due) if amount_due else 0
+                        current_val = float(current_month_val) if current_month_val else 0
+                        if current_val == 0 and charge_amount > 0:
+                            row[month_col - 1].value = charge_amount
+                            
+                            # Update amount due (sum all months)
+                            total = 0
+                            for m in MONTHS_2026:
+                                m_col = headers.get(m)
+                                if m_col:
+                                    val = row[m_col - 1].value
+                                    total += float(val) if val else 0
+                            if amount_due_col:
+                                row[amount_due_col - 1].value = total
+                            
+                            charged.append(f"{customer_name} ({sheet_name}): ${charge_amount}")
+                    except:
+                        pass
+        
+        wb.save(EXCEL_FILE)
+        return charged
+    except Exception as e:
+        return [f"Error: {str(e)}"]
+
+def advance_due_date(sheet_name, customer_name, days=30):
+    """Advance the due date by specified days (default 30)"""
+    try:
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[sheet_name]
+        
+        headers = {col.value: idx for idx, col in enumerate(ws[1], start=1)}
+        due_day_col = headers.get('Due Day')
+        
+        if not due_day_col:
+            return False
+        
+        for row in ws.iter_rows(min_row=2):
+            if row[3].value == customer_name:
+                current_due = row[due_day_col - 1].value
+                if current_due:
+                    try:
+                        current_due = int(current_due)
+                        new_due = current_due + days
+                        if new_due > 31:
+                            new_due = new_due % 30
+                            if new_due == 0:
+                                new_due = 30
+                        row[due_day_col - 1].value = new_due
+                    except:
+                        pass
+                break
+        
+        wb.save(EXCEL_FILE)
+        return True
+    except:
+        return False
+
 def get_past_due_customers(all_data):
     results = []
     for service, df in all_data.items():
@@ -416,6 +524,19 @@ with st.sidebar:
 
 # Main content
 st.header("🔍 Search & Filter")
+
+# Auto-charge section
+with st.expander("⚡ Auto-Charge Due Today"):
+    st.write(f"Click to charge all customers with due date matching today (Day {datetime.now().day}, {MONTH_MAP.get(datetime.now().month)})")
+    if st.button("⚡ Run Auto-Charge"):
+        with st.spinner("Charging customers..."):
+            results = auto_charge_due_today()
+            if results:
+                st.success(f"Charged {len(results)} customer(s)!")
+                for r in results:
+                    st.write(f"• {r}")
+            else:
+                st.info("No customers to charge today")
 
 tab1, tab2, tab3, tab4 = st.tabs(["📝 Search by Name", "📅 Filter by Due Date", "⚠️ Past Due", "💰 Collections History"])
 
@@ -520,7 +641,14 @@ with tab1:
                             new_balance = max(0, current - pay_amount)
                             if save_monthly_balance(customer['Service'], customer['Customer Name'], pay_month, new_balance):
                                 update_amount_due_from_months(customer['Service'], customer['Customer Name'])
-                                st.success(f"Payment applied to {pay_month}!")
+                                
+                                # Check if paying current month - advance due date by 30 days
+                                current_month_col = MONTH_MAP.get(datetime.now().month)
+                                if pay_month == current_month_col:
+                                    advance_due_date(customer['Service'], customer['Customer Name'], days=30)
+                                    st.success(f"Payment applied to {pay_month}! Due date advanced 30 days.")
+                                else:
+                                    st.success(f"Payment applied to {pay_month}!")
                                 st.rerun()
                             else:
                                 st.error("Error applying payment!")
