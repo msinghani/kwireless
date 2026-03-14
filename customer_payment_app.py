@@ -374,7 +374,15 @@ def auto_charge_due_today():
                 customer_name = row[3].value
                 current_month_val = row[month_col - 1].value
                 
-                if due_day == current_day:
+                debug_info.append(f"Row: {customer_name} - due_day={due_day}(type={type(due_day)}), current_day={current_day}, amount_due={amount_due}")
+                
+                # Compare as integers to handle string vs int
+                try:
+                    due_day_int = int(due_day) if due_day else None
+                except:
+                    due_day_int = None
+                
+                if due_day_int == current_day:
                     try:
                         charge_amount = float(amount_due) if amount_due else 0
                         debug_info.append(f"Found {customer_name}: due_day={due_day}, amount_due={amount_due}, charge_amount={charge_amount}")
