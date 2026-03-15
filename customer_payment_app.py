@@ -1160,41 +1160,85 @@ def display_customer_card(customer, index):
  
     st.markdown(f"**Total Balance: :{balance_color}[{balance_display}]**")
  
-    # Monthly balances in a compact table
-    with st.expander("Monthly Balances (2026)", expanded=False):
-        cols = st.columns(6)
-        for j, (month_col, month_name) in enumerate(MONTHS_DISPLAY):
-            with cols[j % 6]:
-                val = monthly_balances.get(month_col, 0)
-                label = month_name[:3]
-                if val > 0:
-                    st.metric(label, f"${val:.2f}")
+
+    # Pre-compute Square IDs used by multiple sections below
+    sq_card_id = str(customer.get('Square Card ID', '')  or '').strip()
+    sq_cust_id = str(customer.get('Square Customer ID', '') or '').strip()
+    if sq_card_id.lower() in ('nan', 'none', ''): sq_card_id = ''
+    if sq_cust_id.lower() in ('nan', 'none', ''): sq_cust_id = ''
+    current_month_col = MONTH_MAP.get(datetime.now().month)
+
+
+    # ── 1. Charge Card via Square ──────────────────────────
+    if sq_card_id:
+        with st.expander("💳 Charge Card via Square"):
+            sq_pay_month = st.selectbox(
+                "Apply to Month:", options=[m[0] for m in MONTHS_DISPLAY],
+                format_func=lambda x: dict(MONTHS_DISPLAY).get(x, x),
+                key=f"sq_pay_month_{index}"
+            )
+            month_bal = monthly_balances.get(sq_pay_month, 0)
+            default_amt = float(month_bal) if month_bal > 0 else float(safe_float(customer.get('Plan Cost', 0)))
+            sq_amount = st.number_input(
+                "Charge Amount ($):", min_value=0.01, value=default_amt,
+                step=5.0, key=f"sq_amt_{index}"
+            )
+            sq_note = st.text_input("Note (optional):", key=f"sq_note_{index}")
+
+            current_month_col = MONTH_MAP.get(datetime.now().month)
+            if sq_pay_month == current_month_col:
+                st.caption("Current month — due date will advance 30 days after charge.")
+
+            if st.button(f"💳 Charge ${sq_amount:.2f} via Square", key=f"sq_charge_{index}"):
+                with st.spinner("Processing Square payment..."):
+                    sq_ok, sq_msg, sq_pid = square_charge_card(
+                        customer['Customer Name'], sq_amount, sq_card_id,
+                        sq_cust_id or None,
+                        note=sq_note or f"K-Wireless payment"
+                    )
+                if sq_ok:
+                    # Record the payment in Excel
+                    is_current = (sq_pay_month == current_month_col)
+                    p_ok, new_due = save_payment(
+                        customer['Service'], customer['Customer Name'],
+                        sq_amount, pay_month=sq_pay_month,
+                        notes=f"Square ID: {sq_pid}",
+                        advance_due=is_current
+                    )
+                    if p_ok:
+                        if is_current and new_due:
+                            st.success(f"✅ {sq_msg} — Next due: {new_due.strftime('%m/%d/%Y')}")
+                        else:
+                            st.success(f"✅ {sq_msg}")
+                        st.rerun()
+                    else:
+                        st.warning(f"Square charged successfully ({sq_pid}) but Excel update failed. Please record manually.")
                 else:
-                    st.metric(label, "$0.00")
-        st.write(f"**Total from months:** ${total_from_aging:.2f}")
- 
-    # Edit monthly balance
-    with st.expander("Edit Monthly Balance"):
-        col_edit1, col_edit2 = st.columns(2)
-        with col_edit1:
-            edit_month = st.selectbox("Select Month:", options=[m[0] for m in MONTHS_DISPLAY],
-                                      format_func=lambda x: dict(MONTHS_DISPLAY).get(x, x),
-                                      key=f"edit_month_{index}")
-        with col_edit2:
-            current_val = monthly_balances.get(edit_month, 0)
-            new_val = st.number_input("New Balance:", min_value=0.0, value=float(current_val),
-                                      step=5.0, key=f"edit_val_{index}")
- 
-        if st.button(f"Save {dict(MONTHS_DISPLAY).get(edit_month, edit_month)} Balance",
-                     key=f"save_{index}"):
-            if save_monthly_balance(customer['Service'], customer['Customer Name'], edit_month, new_val):
-                update_amount_due_from_months(customer['Service'], customer['Customer Name'])
-                st.success("Balance saved!")
-                st.rerun()
-            else:
-                st.error("Error saving balance!")
- 
-    # Post payment
+                    st.error(f"❌ {sq_msg}")
+
+
+    # ── 2. Rollback Last Payment ───────────────────────────
+    notes_val = str(customer.get('Notes', '') or '')
+    last_pmt = get_last_payment_with_month(notes_val)
+    if last_pmt:
+        with st.expander("↩️ Rollback Last Payment"):
+            st.warning(
+                f"**Last payment:** ${last_pmt['amount']:.2f}"
+                + (f" ({last_pmt['month_col']})" if last_pmt['month_col'] else "")
+                + f" on {last_pmt['paid_on']}"
+                + (f" | Next due was: {last_pmt['next_due']}" if last_pmt['next_due'] else "")
+            )
+            st.caption("This will restore the month balance, remove the payment note, and reverse the due date advance.")
+            if st.button("⚠️ Confirm Rollback", key=f"rollback_{index}"):
+                success, msg = rollback_payment(customer['Service'], customer['Customer Name'])
+                if success:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(f"Rollback failed: {msg}")
+
+
+    # ── 3. Post Payment ────────────────────────────────────
     with st.expander("Post Payment"):
         col_pay1, col_pay2 = st.columns(2)
         with col_pay1:
@@ -1210,7 +1254,6 @@ def display_customer_card(customer, index):
         pay_notes = st.text_input("Payment Notes (optional):", key=f"pay_notes_{index}")
  
         # Show which month is current so user understands the due date logic
-        current_month_col = MONTH_MAP.get(datetime.now().month)
         if pay_month == current_month_col:
             st.caption("This is the current month — due date will advance 30 days after payment.")
         else:
@@ -1241,32 +1284,42 @@ def display_customer_card(customer, index):
                 st.warning("Please enter a payment amount greater than $0.")
  
 
-    # Rollback last payment
-    notes_val = str(customer.get('Notes', '') or '')
-    last_pmt = get_last_payment_with_month(notes_val)
-    if last_pmt:
-        with st.expander("↩️ Rollback Last Payment"):
-            st.warning(
-                f"**Last payment:** ${last_pmt['amount']:.2f}"
-                + (f" ({last_pmt['month_col']})" if last_pmt['month_col'] else "")
-                + f" on {last_pmt['paid_on']}"
-                + (f" | Next due was: {last_pmt['next_due']}" if last_pmt['next_due'] else "")
-            )
-            st.caption("This will restore the month balance, remove the payment note, and reverse the due date advance.")
-            if st.button("⚠️ Confirm Rollback", key=f"rollback_{index}"):
-                success, msg = rollback_payment(customer['Service'], customer['Customer Name'])
-                if success:
-                    st.success(msg)
-                    st.rerun()
+    # ── 4. Monthly Balances ────────────────────────────────
+    with st.expander("Monthly Balances (2026)", expanded=False):
+        cols = st.columns(6)
+        for j, (month_col, month_name) in enumerate(MONTHS_DISPLAY):
+            with cols[j % 6]:
+                val = monthly_balances.get(month_col, 0)
+                label = month_name[:3]
+                if val > 0:
+                    st.metric(label, f"${val:.2f}")
                 else:
-                    st.error(f"Rollback failed: {msg}")
+                    st.metric(label, "$0.00")
+        st.write(f"**Total from months:** ${total_from_aging:.2f}")
+ 
+    # ── 5. Edit Monthly Balance ────────────────────────────
+    with st.expander("Edit Monthly Balance"):
+        col_edit1, col_edit2 = st.columns(2)
+        with col_edit1:
+            edit_month = st.selectbox("Select Month:", options=[m[0] for m in MONTHS_DISPLAY],
+                                      format_func=lambda x: dict(MONTHS_DISPLAY).get(x, x),
+                                      key=f"edit_month_{index}")
+        with col_edit2:
+            current_val = monthly_balances.get(edit_month, 0)
+            new_val = st.number_input("New Balance:", min_value=0.0, value=float(current_val),
+                                      step=5.0, key=f"edit_val_{index}")
+ 
+        if st.button(f"Save {dict(MONTHS_DISPLAY).get(edit_month, edit_month)} Balance",
+                     key=f"save_{index}"):
+            if save_monthly_balance(customer['Service'], customer['Customer Name'], edit_month, new_val):
+                update_amount_due_from_months(customer['Service'], customer['Customer Name'])
+                st.success("Balance saved!")
+                st.rerun()
+            else:
+                st.error("Error saving balance!")
+ 
 
-    # === Square Account Management ===
-    sq_card_id  = str(customer.get('Square Card ID', '')  or '').strip()
-    sq_cust_id  = str(customer.get('Square Customer ID', '') or '').strip()
-    if sq_card_id.lower()  in ('nan', 'none', ''): sq_card_id  = ''
-    if sq_cust_id.lower()  in ('nan', 'none', ''): sq_cust_id  = ''
-
+    # ── Square Account (setup / linking) ──────────────────
     with st.expander("🔗 Square Account"):
         if sq_cust_id:
             st.info(f"Customer ID: `{sq_cust_id}`")
@@ -1339,53 +1392,6 @@ def display_customer_card(customer, index):
                     st.rerun()
             else:
                 st.warning("Enter at least one ID to save.")
-
-    # === Charge Card via Square ===
-    if sq_card_id:
-        with st.expander("💳 Charge Card via Square"):
-            sq_pay_month = st.selectbox(
-                "Apply to Month:", options=[m[0] for m in MONTHS_DISPLAY],
-                format_func=lambda x: dict(MONTHS_DISPLAY).get(x, x),
-                key=f"sq_pay_month_{index}"
-            )
-            month_bal = monthly_balances.get(sq_pay_month, 0)
-            default_amt = float(month_bal) if month_bal > 0 else float(safe_float(customer.get('Plan Cost', 0)))
-            sq_amount = st.number_input(
-                "Charge Amount ($):", min_value=0.01, value=default_amt,
-                step=5.0, key=f"sq_amt_{index}"
-            )
-            sq_note = st.text_input("Note (optional):", key=f"sq_note_{index}")
-
-            current_month_col = MONTH_MAP.get(datetime.now().month)
-            if sq_pay_month == current_month_col:
-                st.caption("Current month — due date will advance 30 days after charge.")
-
-            if st.button(f"💳 Charge ${sq_amount:.2f} via Square", key=f"sq_charge_{index}"):
-                with st.spinner("Processing Square payment..."):
-                    sq_ok, sq_msg, sq_pid = square_charge_card(
-                        customer['Customer Name'], sq_amount, sq_card_id,
-                        sq_cust_id or None,
-                        note=sq_note or f"K-Wireless payment"
-                    )
-                if sq_ok:
-                    # Record the payment in Excel
-                    is_current = (sq_pay_month == current_month_col)
-                    p_ok, new_due = save_payment(
-                        customer['Service'], customer['Customer Name'],
-                        sq_amount, pay_month=sq_pay_month,
-                        notes=f"Square ID: {sq_pid}",
-                        advance_due=is_current
-                    )
-                    if p_ok:
-                        if is_current and new_due:
-                            st.success(f"✅ {sq_msg} — Next due: {new_due.strftime('%m/%d/%Y')}")
-                        else:
-                            st.success(f"✅ {sq_msg}")
-                        st.rerun()
-                    else:
-                        st.warning(f"Square charged successfully ({sq_pid}) but Excel update failed. Please record manually.")
-                else:
-                    st.error(f"❌ {sq_msg}")
 
     # Edit customer info
     with st.expander("Edit Customer Info"):
