@@ -41,11 +41,11 @@ COL = {
     'square_customer_id': 'Square Customer ID',
     'square_card_id': 'Square Card ID',
 }
- 
+
 # === SQUARE PAYMENT INTEGRATION ===
 SQUARE_ACCESS_TOKEN = "EAAAlw_J8kMvMUP4nm3FPaBbrRTsgi5aM1VJb9UHgeA3cmdmqKnUguJnPmNtI40e"
 SQUARE_LOCATION_ID  = "LJQJN0SC79G1M"
- 
+
 def _square_headers():
     """Return HTTP headers for Square API requests."""
     return {
@@ -53,16 +53,16 @@ def _square_headers():
         "Content-Type": "application/json",
         "Square-Version": "2024-01-18",
     }
- 
- 
+
+
 def _square_errors(data):
     """Extract a readable error string from a Square API response dict."""
     errs = data.get("errors", [])
     if errs:
         return "; ".join(f"{e.get('code','')}: {e.get('detail','')}" for e in errs)
     return "Unknown error"
- 
- 
+
+
 def save_square_ids(sheet_name, customer_name, square_customer_id, square_card_id):
     """Persist Square Customer ID and Card ID to Excel (adds columns if needed)."""
     try:
@@ -86,8 +86,8 @@ def save_square_ids(sheet_name, customer_name, square_customer_id, square_card_i
     except Exception as e:
         logger.error(f"Error saving Square IDs for {customer_name}: {e}")
         return False
- 
- 
+
+
 def create_square_customer(customer_name, phone):
     """Create a Square customer via REST API. Returns (customer_id or None, error or None)."""
     import requests as _req
@@ -110,8 +110,8 @@ def create_square_customer(customer_name, phone):
         return None, _square_errors(data)
     except Exception as e:
         return None, str(e)
- 
- 
+
+
 def list_square_cards(square_customer_id):
     """Return (list of card dicts, error or None) for a Square customer via REST API."""
     import requests as _req
@@ -127,8 +127,8 @@ def list_square_cards(square_customer_id):
         return [], _square_errors(data)
     except Exception as e:
         return [], str(e)
- 
- 
+
+
 def square_charge_card(customer_name, amount, square_card_id, square_customer_id=None, note=""):
     """Charge a card on file via Square REST API. Returns (success, message, payment_id or None)."""
     import requests as _req
@@ -161,8 +161,8 @@ def square_charge_card(customer_name, amount, square_card_id, square_customer_id
         return False, f"Card declined: {_square_errors(data)}", None
     except Exception as e:
         return False, f"Square API error: {str(e)}", None
- 
- 
+
+
 # === 12-MONTH AGING SYSTEM ===
 MONTHS_2026 = [
     'Jan_2026', 'Feb_2026', 'Mar_2026', 'Apr_2026', 'May_2026', 'Jun_2026',
@@ -574,8 +574,128 @@ def save_payment(sheet_name, customer_name, payment_amount, pay_month=None, note
         logger.error(f"Error saving payment: {e}")
         st.error(f"Error saving: {e}")
         return False, None
- 
- 
+
+
+def parse_payment_notes(notes_str, customer_name, sheet_name):
+    """Parse Notes field to extract individual payment entries.
+    Returns list of dicts: {customer, sheet, amount, month, method, dt}
+    """
+    import re as _re
+    entries = []
+    if not notes_str:
+        return entries
+    parts = str(notes_str).split(' | ')
+    for part in parts:
+        part = part.strip()
+        # Match: "Paid $X.XX (Month Label) on YYYY-MM-DD HH:MM AM/PM"
+        m = _re.match(
+            r'Paid \$([0-9.]+)(?:\s+\(([^)]+)\))?\s+on\s+(\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}\s+[AP]M)',
+            part
+        )
+        if not m:
+            continue
+        try:
+            amount = float(m.group(1))
+            month  = m.group(2) or ''
+            dt_str = m.group(3)
+            dt = datetime.strptime(dt_str, '%Y-%m-%d %I:%M %p')
+        except Exception:
+            continue
+        method = 'Square' if ('Square:' in part or 'Square ID:' in part) else 'Manual'
+        entries.append({
+            'customer': customer_name,
+            'sheet':    sheet_name,
+            'amount':   amount,
+            'month':    month,
+            'method':   method,
+            'dt':       dt,
+        })
+    return entries
+
+
+def get_collections_report(start_date, end_date):
+    """Scan all sheets and return payment entries within the date range.
+    Returns (list_of_entries, error_string_or_None).
+    """
+    try:
+        wb = load_workbook(EXCEL_FILE, data_only=True)
+    except Exception as e:
+        return [], str(e)
+    all_entries = []
+    for sheet_name in wb.sheetnames:
+        try:
+            ws = wb[sheet_name]
+            headers = get_header_map(ws)
+            if 'Customer Name' not in headers or 'Notes' not in headers:
+                continue
+            for row in ws.iter_rows(min_row=2):
+                cust_name = get_cell(row, headers, 'Customer Name')
+                notes     = get_cell(row, headers, 'Notes', '')
+                if not cust_name or not notes:
+                    continue
+                row_entries = parse_payment_notes(str(notes), str(cust_name), sheet_name)
+                for e in row_entries:
+                    if start_date <= e['dt'].date() <= end_date:
+                        all_entries.append(e)
+        except Exception:
+            continue
+    wb.close()
+    all_entries.sort(key=lambda x: x['dt'], reverse=True)
+    return all_entries, None
+
+
+def _build_report_html(entries, period_label, total, sq_total, manual_total):
+    """Build a printable HTML collections report."""
+    rows_html = ''
+    for e in entries:
+        if e['method'] == 'Square':
+            badge = '<span style="background:#28a745;color:white;padding:2px 8px;border-radius:10px;font-size:11px">Square</span>'
+        else:
+            badge = '<span style="background:#6c757d;color:white;padding:2px 8px;border-radius:10px;font-size:11px">Manual</span>'
+        rows_html += (
+            f'<tr>'
+            f'<td>{e["customer"]}</td>'
+            f'<td>{e["sheet"]}</td>'
+            f'<td style="text-align:right;font-weight:bold">${e["amount"]:.2f}</td>'
+            f'<td>{e["month"]}</td>'
+            f'<td>{badge}</td>'
+            f'<td>{e["dt"].strftime("%m/%d/%Y %I:%M %p")}</td>'
+            f'</tr>'
+        )
+    generated = datetime.now().strftime('%m/%d/%Y %I:%M %p')
+    return (
+        '<!DOCTYPE html><html><head><meta charset="UTF-8">'
+        '<title>K-Wireless Collections Report</title>'
+        '<style>'
+        'body{font-family:Arial,sans-serif;margin:40px;color:#333}'
+        'h1{color:#1a1a2e;font-size:22px;margin-bottom:4px}'
+        '.subtitle{color:#666;font-size:13px;margin-bottom:20px}'
+        'table{width:100%;border-collapse:collapse;margin-top:15px;font-size:13px}'
+        'th{background:#1a1a2e;color:white;padding:10px;text-align:left}'
+        'td{padding:8px 10px;border-bottom:1px solid #eee}'
+        'tr:nth-child(even){background:#f8f9fa}'
+        '.summary{margin-top:24px;padding:15px 20px;background:#f0f4ff;border-radius:8px;border-left:4px solid #1a1a2e}'
+        '.total{font-size:18px;font-weight:bold;color:#1a1a2e;margin:0 0 6px 0}'
+        '.detail{font-size:13px;color:#555;margin:3px 0}'
+        'button{padding:10px 20px;background:#1a1a2e;color:white;border:none;border-radius:6px;cursor:pointer;font-size:14px;margin-top:16px}'
+        '@media print{button{display:none}}'
+        '</style></head><body>'
+        f'<h1>&#128200; K-Wireless Collections Report</h1>'
+        f'<div class="subtitle">Period: {period_label} &nbsp;|&nbsp; Generated: {generated}</div>'
+        '<table><thead><tr>'
+        '<th>Customer</th><th>Service</th><th style="text-align:right">Amount</th>'
+        '<th>Month</th><th>Method</th><th>Date / Time</th>'
+        f'</tr></thead><tbody>{rows_html}</tbody></table>'
+        '<div class="summary">'
+        f'<p class="total">Total Collected: ${total:.2f}</p>'
+        f'<p class="detail">&#128179; Square: ${sq_total:.2f} &nbsp;&nbsp; &#9995; Manual: ${manual_total:.2f}</p>'
+        f'<p class="detail">Transactions: {len(entries)}</p>'
+        '</div>'
+        '<button onclick="window.print()">&#128438; Print Report</button>'
+        '</body></html>'
+    )
+
+
 def get_last_payment_with_month(notes_str):
     """Parse the most recent payment entry from a Notes string including month label."""
     import re
@@ -593,8 +713,8 @@ def get_last_payment_with_month(notes_str):
         'next_due':   m.group(4),
         'full_entry': m.group(0),
     }
- 
- 
+
+
 def rollback_payment(sheet_name, customer_name):
     """Reverse the most recent payment for a customer.
     Restores month balance, removes payment note, and reverses due date advance."""
@@ -602,21 +722,21 @@ def rollback_payment(sheet_name, customer_name):
         wb = load_workbook(EXCEL_FILE)
         ws = wb[sheet_name]
         headers = get_header_map(ws)
- 
+
         for row in ws.iter_rows(min_row=2):
             if get_cell(row, headers, 'Customer Name') != customer_name:
                 continue
- 
+
             notes = str(get_cell(row, headers, 'Notes', '') or '')
             last = get_last_payment_with_month(notes)
             if not last:
                 return False, "No payment found in notes to roll back."
- 
+
             # Restore month column balance
             month_col = last['month_col']
             if month_col and month_col in headers:
                 set_cell(row, headers, month_col, last['amount'])
- 
+
             # Reverse due date advance: subtract 30 days from Next due
             original_due = None
             if last['next_due']:
@@ -627,7 +747,7 @@ def rollback_payment(sheet_name, customer_name):
                     set_cell(row, headers, 'Charge Date', original_due.strftime('%Y-%m-%d'))
                 except Exception:
                     pass
- 
+
             # Remove the last payment entry from Notes
             entry = last['full_entry']
             if f" | {entry}" in notes:
@@ -637,16 +757,16 @@ def rollback_payment(sheet_name, customer_name):
             else:
                 new_notes = notes.replace(entry, "").strip().strip('|').strip()
             set_cell(row, headers, 'Notes', new_notes)
- 
+
             # Recalculate Amount Due
             row_num = row[0].row
             set_cell(row, headers, 'Amount Due', f'=SUM(N{row_num}:Y{row_num})')
- 
+
             # Clear status
             set_cell(row, headers, 'Status', '')
- 
+
             break
- 
+
         locked_save(wb, EXCEL_FILE)
         msg = f"Rolled back ${last['amount']:.2f}"
         if last['month_col']:
@@ -658,8 +778,8 @@ def rollback_payment(sheet_name, customer_name):
     except Exception as e:
         logger.error(f"Rollback error for {customer_name}: {e}")
         return False, str(e)
- 
- 
+
+
 def advance_due_date(sheet_name, customer_name, days=30):
     """Advance the due date by calculating 30 days from the current due date.
  
@@ -928,7 +1048,7 @@ def auto_charge_due_today():
                     charge_amount = safe_float(plan_cost)
                     if charge_amount <= 0:
                         continue
- 
+
                     # === Square charging (if customer has a card on file) ===
                     sq_card_raw = get_cell(row, headers, 'Square Card ID')
                     sq_cust_raw = get_cell(row, headers, 'Square Customer ID')
@@ -936,7 +1056,7 @@ def auto_charge_due_today():
                     sq_cust_id  = str(sq_cust_raw).strip() if sq_cust_raw else ''
                     if sq_card_id.lower()  in ('nan', 'none', ''): sq_card_id  = ''
                     if sq_cust_id.lower()  in ('nan', 'none', ''): sq_cust_id  = ''
- 
+
                     square_payment_id = None
                     square_error      = None
                     if sq_card_id:
@@ -949,17 +1069,17 @@ def auto_charge_due_today():
                             square_payment_id = sq_pid
                         else:
                             square_error = sq_msg
- 
+
                     # Set month balance: 0 (paid) if Square succeeded, else charge_amount (owed)
                     if square_payment_id:
                         set_cell(row, headers, month_key, 0)
                     else:
                         set_cell(row, headers, month_key, charge_amount)
- 
+
                     # Update total Amount Due with formula
                     row_num = row[0].row
                     set_cell(row, headers, 'Amount Due', f'=SUM(N{row_num}:Y{row_num})')
- 
+
                     # Advance due date 30 days from Charge Date (the authoritative due date)
                     new_due_date = None
                     try:
@@ -982,7 +1102,7 @@ def auto_charge_due_today():
                             set_cell(row, headers, 'Charge Date', new_due_date.strftime('%Y-%m-%d'))
                     except Exception:
                         pass
- 
+
                     # Write note for Square charges so collections parser picks them up
                     if square_payment_id or square_error:
                         existing_notes = str(get_cell(row, headers, 'Notes', '') or '')
@@ -999,7 +1119,7 @@ def auto_charge_due_today():
                             note_entry = f"Square DECLINED ${charge_amount:.2f} on {today.strftime('%Y-%m-%d')}: {short_err}"
                         new_notes = (existing_notes + " | " + note_entry) if existing_notes else note_entry
                         set_cell(row, headers, 'Notes', new_notes)
- 
+
                     # Record in results list
                     if square_payment_id:
                         charged.append(f"{customer_name} ({sheet_name}): ${charge_amount:.2f} ✅ Charged via Square")
@@ -1009,7 +1129,7 @@ def auto_charge_due_today():
                         charged.append(f"{customer_name} ({sheet_name}): ${charge_amount:.2f} ⚠️ catch-up from day {due_day_int}")
                     else:
                         charged.append(f"{customer_name} ({sheet_name}): ${charge_amount:.2f}")
- 
+
                     logger.info(
                         f"Auto-charged {customer_name} ({sheet_name}): ${charge_amount:.2f}"
                         + (f" via Square {square_payment_id}" if square_payment_id else "")
@@ -1034,7 +1154,7 @@ def get_past_due_customers(all_data):
     current_month_key = MONTH_MAP.get(today.month)
     current_month_idx = MONTHS_2026.index(current_month_key) if current_month_key in MONTHS_2026 else -1
     past_month_keys = MONTHS_2026[:current_month_idx] if current_month_idx > 0 else []
- 
+
     for service, df in all_data.items():
         if df is None or df.empty:
             continue
@@ -1043,14 +1163,14 @@ def get_past_due_customers(all_data):
             status_str = str(status).upper() if status else ''
             if 'PAID' in status_str or status_str == 'READY':
                 continue
- 
+
             # Check for balance in previous months — always past due
             has_prev_balance = any(safe_float(row.get(m, 0)) > 0 for m in past_month_keys)
- 
+
             # Check for balance in current month
             current_month_balance = safe_float(row.get(current_month_key, 0)) if current_month_key else 0
             has_current_balance = current_month_balance > 0
- 
+
             # For current month balance, only count as past due if Charge Date <= today
             current_month_due = False
             if has_current_balance:
@@ -1066,7 +1186,7 @@ def get_past_due_customers(all_data):
                         current_month_due = True  # Can't parse date — include to be safe
                 else:
                     current_month_due = True  # No charge date — include to be safe
- 
+
             if has_prev_balance or current_month_due:
                 results.append(_build_customer_result(row, service))
     return results
@@ -1160,15 +1280,15 @@ def display_customer_card(customer, index):
  
     st.markdown(f"**Total Balance: :{balance_color}[{balance_display}]**")
  
- 
+
     # Pre-compute Square IDs used by multiple sections below
     sq_card_id = str(customer.get('Square Card ID', '')  or '').strip()
     sq_cust_id = str(customer.get('Square Customer ID', '') or '').strip()
     if sq_card_id.lower() in ('nan', 'none', ''): sq_card_id = ''
     if sq_cust_id.lower() in ('nan', 'none', ''): sq_cust_id = ''
     current_month_col = MONTH_MAP.get(datetime.now().month)
- 
- 
+
+
     # ── 1. Charge Card via Square ──────────────────────────
     if sq_card_id:
         with st.expander("💳 Charge Card via Square"):
@@ -1184,11 +1304,11 @@ def display_customer_card(customer, index):
                 step=5.0, key=f"sq_amt_{index}"
             )
             sq_note = st.text_input("Note (optional):", key=f"sq_note_{index}")
- 
+
             current_month_col = MONTH_MAP.get(datetime.now().month)
             if sq_pay_month == current_month_col:
                 st.caption("Current month — due date will advance 30 days after charge.")
- 
+
             if st.button(f"💳 Charge ${sq_amount:.2f} via Square", key=f"sq_charge_{index}"):
                 with st.spinner("Processing Square payment..."):
                     sq_ok, sq_msg, sq_pid = square_charge_card(
@@ -1215,8 +1335,8 @@ def display_customer_card(customer, index):
                         st.warning(f"Square charged successfully ({sq_pid}) but Excel update failed. Please record manually.")
                 else:
                     st.error(f"❌ {sq_msg}")
- 
- 
+
+
     # ── 2. Rollback Last Payment ───────────────────────────
     notes_val = str(customer.get('Notes', '') or '')
     last_pmt = get_last_payment_with_month(notes_val)
@@ -1236,8 +1356,8 @@ def display_customer_card(customer, index):
                     st.rerun()
                 else:
                     st.error(f"Rollback failed: {msg}")
- 
- 
+
+
     # ── 3. Post Payment ────────────────────────────────────
     with st.expander("Post Payment"):
         col_pay1, col_pay2 = st.columns(2)
@@ -1283,7 +1403,7 @@ def display_customer_card(customer, index):
             else:
                 st.warning("Please enter a payment amount greater than $0.")
  
- 
+
     # ── 4. Monthly Balances ────────────────────────────────
     with st.expander("Monthly Balances (2026)", expanded=False):
         cols = st.columns(6)
@@ -1318,7 +1438,7 @@ def display_customer_card(customer, index):
             else:
                 st.error("Error saving balance!")
  
- 
+
     # ── Square Account (setup / linking) ──────────────────
     with st.expander("🔗 Square Account"):
         if sq_cust_id:
@@ -1327,7 +1447,7 @@ def display_customer_card(customer, index):
                 st.success(f"Card on file: `{sq_card_id}`")
             else:
                 st.warning("No card linked yet.")
- 
+
             col_sq1, col_sq2 = st.columns(2)
             with col_sq1:
                 if st.button("List Cards on File", key=f"sq_list_{index}"):
@@ -1342,7 +1462,7 @@ def display_customer_card(customer, index):
                 if st.button("Refresh", key=f"sq_refresh_{index}"):
                     st.session_state.pop(f'sq_cards_{index}', None)
                     st.rerun()
- 
+
             # Show listed cards
             if f'sq_cards_{index}' in st.session_state:
                 for card in st.session_state[f'sq_cards_{index}']:
@@ -1372,7 +1492,7 @@ def display_customer_card(customer, index):
                     st.rerun()
                 else:
                     st.error(f"Square error: {err}")
- 
+
         st.divider()
         st.caption("Or enter IDs manually (get from Square Dashboard → Customers):")
         col_m1, col_m2 = st.columns(2)
@@ -1392,7 +1512,7 @@ def display_customer_card(customer, index):
                     st.rerun()
             else:
                 st.warning("Enter at least one ID to save.")
- 
+
     # Edit customer info
     with st.expander("Edit Customer Info"):
         with st.form(f"edit_form_{index}"):
@@ -1435,7 +1555,7 @@ def display_customer_card(customer, index):
     st.divider()
  
  
- 
+
 def generate_past_due_report(past_due_customers):
     """Generate a printable HTML report of all past due customers with months owed."""
     from datetime import datetime as _dt
@@ -1453,7 +1573,7 @@ def generate_past_due_report(past_due_customers):
         modem    = str(c.get('Modem Numbers', '') or '').strip()
         if modem.lower() in ('nan', 'none', ''):
             modem = ''
- 
+
         # Find which months have a balance
         months_owed = []
         for m in MONTHS_2026:
@@ -1462,7 +1582,7 @@ def generate_past_due_report(past_due_customers):
                 label = dict(MONTHS_DISPLAY).get(m, m)
                 months_owed.append(f"{label}: ${val:.2f}")
         months_str = ', '.join(months_owed) if months_owed else 'Balance on account'
- 
+
         rows += f"""
         <tr>
             <td>{name}</td>
@@ -1476,7 +1596,7 @@ def generate_past_due_report(past_due_customers):
             <td>{cvv}</td>
             <td>{modem}</td>
         </tr>"""
- 
+
     html = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -1528,7 +1648,7 @@ def generate_past_due_report(past_due_customers):
 </body>
 </html>"""
     return html
- 
+
 # === MAIN UI ===
  
 st.title("📡 K-Wireless Payment Manager")
@@ -1543,31 +1663,31 @@ if all_data is None:
 with st.sidebar:
     # ── 1. Daily Collections ───────────────────────────────
     st.header("💰 Collections")
- 
+
     all_records = parse_collections_from_notes(all_data)
     today = datetime.now().date()
- 
+
     today_records = [r for r in all_records if r['date'] == today]
     today_total = sum(r['amount'] for r in today_records)
     st.metric("Collected Today", f"${today_total:,.2f}", f"{len(today_records)} payment(s)")
- 
+
     if today_records:
         for r in today_records:
             st.write(f"• {r['customer']} ({r['service']}) — ${r['amount']:,.2f}")
- 
+
     st.divider()
     st.subheader("Look Up a Date")
     lookup_date = st.date_input("Select date", value=today, key="collections_date")
     lookup_records = [r for r in all_records if r['date'] == lookup_date]
     lookup_total = sum(r['amount'] for r in lookup_records)
- 
+
     if lookup_records:
         st.success(f"Total: **${lookup_total:,.2f}** ({len(lookup_records)} payment(s))")
         for r in lookup_records:
             st.write(f"• {r['customer']} ({r['service']}) — ${r['amount']:,.2f}")
     else:
         st.info("No payments recorded on this date.")
- 
+
     # ── 2. Totals ──────────────────────────────────────────
     st.divider()
     total_customers = 0
@@ -1587,16 +1707,16 @@ with st.sidebar:
                 revenue += row_total
             total_outstanding += revenue
             service_stats.append((service, count, revenue))
- 
+
     st.metric("Total Outstanding", f"${total_outstanding:,.2f}")
     st.metric("Total Customers", total_customers)
- 
+
     # ── 3. Summary by Service ──────────────────────────────
     st.divider()
     st.header("Summary")
     for service, count, revenue in service_stats:
         st.metric(service, f"{count} customers", f"${revenue:,.2f} outstanding")
- 
+
     # ── 4. Database Management (bottom) ───────────────────
     st.divider()
     st.subheader("🗄️ Database")
@@ -1804,9 +1924,81 @@ with tab5:
             else:
                 st.warning("Please enter at least a name and select a service.")
  
+# ── COLLECTIONS REPORT ─────────────────────────────────────────────────────
+st.divider()
+st.subheader("📊 Collections Report")
+
+_report_range = st.radio(
+    "Report Period:",
+    ["Today", "This Week", "Custom Range"],
+    horizontal=True,
+    key="report_range_selector"
+)
+
+_today = datetime.now().date()
+if _report_range == "Today":
+    _r_start, _r_end = _today, _today
+elif _report_range == "This Week":
+    from datetime import timedelta as _td
+    _week_start = _today - __import__('datetime').timedelta(days=_today.weekday())
+    _r_start, _r_end = _week_start, _today
+else:
+    _col1, _col2 = st.columns(2)
+    _r_start = _col1.date_input("From:", value=_today, key="report_from")
+    _r_end   = _col2.date_input("To:",   value=_today, key="report_to")
+
+if st.button("🔍 Generate Report", key="gen_collections_report"):
+    with st.spinner("Scanning payment records..."):
+        _entries, _err = get_collections_report(_r_start, _r_end)
+    if _err:
+        st.error(f"Error loading data: {_err}")
+    elif not _entries:
+        st.info("No payments found for this period.")
+    else:
+        _total        = sum(e['amount'] for e in _entries)
+        _sq_total     = sum(e['amount'] for e in _entries if e['method'] == 'Square')
+        _manual_total = sum(e['amount'] for e in _entries if e['method'] == 'Manual')
+
+        # Summary metrics
+        _mc1, _mc2, _mc3 = st.columns(3)
+        _mc1.metric("Total Collected",    f"${_total:.2f}")
+        _mc2.metric("Square Payments",    f"${_sq_total:.2f}")
+        _mc3.metric("Manual Payments",    f"${_manual_total:.2f}")
+
+        # Table
+        _df = pd.DataFrame([{
+            'Customer':  e['customer'],
+            'Service':   e['sheet'],
+            'Amount':    f"${e['amount']:.2f}",
+            'Month':     e['month'],
+            'Method':    e['method'],
+            'Date/Time': e['dt'].strftime('%m/%d/%Y %I:%M %p'),
+        } for e in _entries])
+        st.dataframe(_df, use_container_width=True, hide_index=True)
+        st.caption(f"{len(_entries)} transaction(s)")
+
+        # Download printable report
+        if _r_start == _r_end:
+            _period_label = _r_start.strftime('%m/%d/%Y')
+        else:
+            _period_label = f"{_r_start.strftime('%m/%d/%Y')} \u2013 {_r_end.strftime('%m/%d/%Y')}"
+        _html = _build_report_html(_entries, _period_label, _total, _sq_total, _manual_total)
+        _fname = f"kwireless_report_{_r_start.strftime('%Y%m%d')}"
+        if _r_start != _r_end:
+            _fname += f"_{_r_end.strftime('%Y%m%d')}"
+        _fname += ".html"
+        st.download_button(
+            label="📄 Download Printable Report",
+            data=_html,
+            file_name=_fname,
+            mime="text/html",
+            help="Download and open in your browser, then use File → Print (or Ctrl+P) to print or save as PDF"
+        )
+
 # Footer
 st.divider()
 st.caption("K-Wireless Payment Manager v2.0")
+ 
  
  
  
