@@ -331,11 +331,13 @@ def get_customers_by_due_day(all_data, due_day):
                 results.append(result)
     return results
 
-def auto_charge_due_today():
-    """Auto-charge all customers whose due date matches today"""
-    today = datetime.now()
-    current_day = today.day
-    current_month = today.month
+def auto_charge_due_today(charge_date=None):
+    """Auto-charge all customers whose due date matches the specified date"""
+    if charge_date is None:
+        charge_date = datetime.now()
+    
+    current_day = charge_date.day
+    current_month = charge_date.month
     
     month_key = MONTH_MAP.get(current_month, 'Mar_2026')
     
@@ -561,17 +563,24 @@ with st.sidebar:
 st.header("🔍 Search & Filter")
 
 # Auto-charge section
-with st.expander("⚡ Auto-Charge Due Today"):
-    st.write(f"Click to charge all customers with due date matching today (Day {datetime.now().day}, {MONTH_MAP.get(datetime.now().month)})")
+with st.expander("⚡ Auto-Charge"):
+    col1, col2 = st.columns(2)
+    with col1:
+        charge_date = st.date_input("Select Date to Charge", value=datetime.now().date())
+    with col2:
+        st.write(f"Day: {charge_date.day}, Month: {MONTH_MAP.get(charge_date.month)}")
+    
     if st.button("⚡ Run Auto-Charge"):
         with st.spinner("Charging customers..."):
-            results = auto_charge_due_today()
+            # Convert date to datetime
+            charge_dt = datetime.combine(charge_date, datetime.min.time())
+            results = auto_charge_due_today(charge_dt)
             if results:
                 st.success(f"Charged {len(results)} customer(s)!")
                 for r in results:
                     st.write(f"• {r}")
             else:
-                st.info("No customers to charge today")
+                st.info("No customers to charge on selected date")
 
 tab1, tab2, tab3, tab4 = st.tabs(["📝 Search by Name", "📅 Filter by Due Date", "⚠️ Past Due", "💰 Collections History"])
 
