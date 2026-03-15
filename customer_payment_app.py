@@ -7,150 +7,288 @@ import streamlit as st
 import pandas as pd
 from openpyxl import load_workbook
 from datetime import datetime, timedelta
-import json
 import calendar
-
+import logging
 import os
+import fcntl
+import shutil
 
-# === NEW 12-MONTH AGING SYSTEM ===
-MONTHS_2026 = ['Jan_2026', 'Feb_2026', 'Mar_2026', 'Apr_2026', 'May_2026', 'Jun_2026', 
-               'Jul_2026', 'Aug_2026', 'Sep_2026', 'Oct_2026', 'Nov_2026', 'Dec_2026']
+# === LOGGING ===
+logging.basicConfig(
+    filename='payment_app.log',
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-# Map month number to column name
+# === COLUMN MAPPING ===
+# All column references use names, resolved dynamically per sheet
+COL = {
+    'charge_date': 'Charge Date',
+    'service': 'Service',
+    'plan_cost': 'Plan Cost',
+    'customer_name': 'Customer Name',
+    'card_number': 'Card Number',
+    'exp': 'Exp',
+    'cvv': 'CVV',
+    'amount_due': 'Amount Due',
+    'status': 'Status',
+    'phone': 'Phone',
+    'notes': 'Notes',
+    'due_day': 'Due Day',
+    'notes2': 'Notes2',
+}
+
+# === 12-MONTH AGING SYSTEM ===
+MONTHS_2026 = [
+    'Jan_2026', 'Feb_2026', 'Mar_2026', 'Apr_2026', 'May_2026', 'Jun_2026',
+    'Jul_2026', 'Aug_2026', 'Sep_2026', 'Oct_2026', 'Nov_2026', 'Dec_2026'
+]
+
 MONTH_MAP = {
     1: 'Jan_2026', 2: 'Feb_2026', 3: 'Mar_2026', 4: 'Apr_2026',
     5: 'May_2026', 6: 'Jun_2026', 7: 'Jul_2026', 8: 'Aug_2026',
     9: 'Sep_2026', 10: 'Oct_2026', 11: 'Nov_2026', 12: 'Dec_2026'
 }
 
-def get_monthly_balances(customer):
-    balances = {}
-    for month in MONTHS_2026:
-        val = customer.get(month, 0)
-        try:
-            balances[month] = float(val) if val else 0
-        except:
-            balances[month] = 0
-    return balances
+MONTHS_DISPLAY = [
+    ('Jan_2026', 'January'), ('Feb_2026', 'February'), ('Mar_2026', 'March'),
+    ('Apr_2026', 'April'), ('May_2026', 'May'), ('Jun_2026', 'June'),
+    ('Jul_2026', 'July'), ('Aug_2026', 'August'), ('Sep_2026', 'September'),
+    ('Oct_2026', 'October'), ('Nov_2026', 'November'), ('Dec_2026', 'December')
+]
 
-def get_total_balance_from_months(balances):
-    return sum(balances.values())
 
-def update_amount_due_from_months(sheet_name, customer_name):
-    """Update the Amount Due column (H) with sum of all 12 months (N-Y)"""
-    try:
-        wb = load_workbook(EXCEL_FILE)
-        ws = wb[sheet_name]
-        
-        for row in ws.iter_rows(min_row=2):
-            if row[3].value == customer_name:
-                total = 0
-                for col_idx in range(13, 25):
-                    try:
-                        val = row[col_idx].value
-                        if val:
-                            total += float(val)
-                    except:
-                        pass
-                row[7].value = total
-                break
-        
-        wb.save(EXCEL_FILE)
-        return True
-    except Exception as e:
-        return False
-      
-def save_monthly_balance(sheet_name, customer_name, month_label, amount):
-    try:
-        wb = load_workbook(EXCEL_FILE)
-        ws = wb[sheet_name]
-        month_col_idx = None
-        for col_idx, col in enumerate(ws[1], start=1):
-            if col.value == month_label:
-                month_col_idx = col_idx
-                break
-        if month_col_idx is None:
-            return False
-        for row in ws.iter_rows(min_row=2):
-            if row[3].value == customer_name:
-                row[month_col_idx - 1].value = amount
-                break
-        wb.save(EXCEL_FILE)
-        return True
-    except:
-        return False
-
-# Configuration
+# === FILE CONFIGURATION ===
 EXCEL_FILE_LOCAL = "cleaned_billing_by_service.xlsx"
-
-# Use persistent disk on Render, or local file for development
 RENDER_DISK_PATH = "/app/data"
 RENDER_SRC_PATH = "/opt/render/project/src"
-if os.path.exists(RENDER_DISK_PATH):
-    disk_file = os.path.join(RENDER_DISK_PATH, "cleaned_billing_by_service.xlsx")
-    if os.path.exists(disk_file):
-        EXCEL_FILE = disk_file
-    else:
-        # Check alternate location where uploads go
+
+def resolve_excel_path():
+    """Determine the correct Excel file path based on environment."""
+    if os.path.exists(RENDER_DISK_PATH):
+        disk_file = os.path.join(RENDER_DISK_PATH, "cleaned_billing_by_service.xlsx")
+        if os.path.exists(disk_file):
+            return disk_file
         src_file = os.path.join(RENDER_SRC_PATH, "cleaned_billing_by_service.xlsx")
         if os.path.exists(src_file):
-            EXCEL_FILE = src_file
-        else:
-            EXCEL_FILE = EXCEL_FILE_LOCAL
-elif os.path.exists(RENDER_SRC_PATH):
-    EXCEL_FILE = os.path.join(RENDER_SRC_PATH, "cleaned_billing_by_service.xlsx")
-else:
-    EXCEL_FILE = EXCEL_FILE_LOCAL
+            return src_file
+    elif os.path.exists(RENDER_SRC_PATH):
+        src_file = os.path.join(RENDER_SRC_PATH, "cleaned_billing_by_service.xlsx")
+        if os.path.exists(src_file):
+            return src_file
+    return EXCEL_FILE_LOCAL
 
-st.set_page_config(page_title="Customer Payment Manager", page_icon="💳", layout="wide")
+EXCEL_FILE = resolve_excel_path()
+
+st.set_page_config(page_title="K-Wireless Payment Manager", page_icon="📡", layout="wide")
+
+
+# === HELPER FUNCTIONS ===
+
+def mask_card(card_number):
+    """Return full card number."""
+    card_str = str(card_number).strip() if card_number else ''
+    if not card_str or card_str.lower() in ('nan', 'none', ''):
+        return 'N/A'
+    return card_str
+
+
+def safe_float(val, default=0.0):
+    """Safely convert a value to float."""
+    if val is None:
+        return default
+    try:
+        s = str(val).strip()
+        if not s or s.lower() == 'nan':
+            return default
+        return float(s)
+    except (ValueError, TypeError):
+        return default
+
+
+def get_header_map(ws):
+    """Build a column name -> index mapping from the first row of a worksheet."""
+    return {cell.value: idx for idx, cell in enumerate(ws[1], start=1) if cell.value is not None}
+
+
+def get_cell(row, headers, col_name, default=None):
+    """Get a cell value from a row by column name."""
+    col_idx = headers.get(col_name)
+    if col_idx is None:
+        return default
+    val = row[col_idx - 1].value
+    return val if val is not None else default
+
+
+def set_cell(row, headers, col_name, value):
+    """Set a cell value in a row by column name."""
+    col_idx = headers.get(col_name)
+    if col_idx is not None:
+        row[col_idx - 1].value = value
+        return True
+    return False
+
+
+def locked_save(wb, filepath):
+    """Save workbook with file locking to prevent concurrent write corruption."""
+    lock_path = filepath + '.lock'
+    try:
+        lock_fd = open(lock_path, 'w')
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        # Create backup before save
+        if os.path.exists(filepath):
+            backup = filepath + '.backup'
+            shutil.copy2(filepath, backup)
+        wb.save(filepath)
+        logger.info(f"Saved {filepath}")
+    except Exception as e:
+        logger.error(f"Error saving {filepath}: {e}")
+        raise
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+        except Exception:
+            pass
+
+
+# === MONTHLY BALANCE FUNCTIONS ===
+
+def get_monthly_balances(customer):
+    """Get monthly balance values from a customer dict."""
+    balances = {}
+    for month in MONTHS_2026:
+        balances[month] = safe_float(customer.get(month, 0))
+    return balances
+
+
+def get_total_balance_from_months(balances):
+    """Sum all monthly balances."""
+    return sum(balances.values())
+
+
+def update_amount_due_from_months(sheet_name, customer_name):
+    """Update the Amount Due column with SUM formula for all 12 month columns."""
+    try:
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[sheet_name]
+        headers = get_header_map(ws)
+
+        for row in ws.iter_rows(min_row=2):
+            name_val = get_cell(row, headers, 'Customer Name')
+            if name_val == customer_name:
+                row_num = row[0].row
+                # Write Excel SUM formula so the file stays formula-based
+                set_cell(row, headers, 'Amount Due', f'=SUM(N{row_num}:Y{row_num})')
+                break
+
+        locked_save(wb, EXCEL_FILE)
+        return True
+    except Exception as e:
+        logger.error(f"Error updating amount due: {e}")
+        return False
+
+
+def save_monthly_balance(sheet_name, customer_name, month_label, amount):
+    """Save a specific month's balance for a customer."""
+    try:
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[sheet_name]
+        headers = get_header_map(ws)
+
+        if month_label not in headers:
+            logger.error(f"Month column {month_label} not found in {sheet_name}")
+            return False
+
+        for row in ws.iter_rows(min_row=2):
+            if get_cell(row, headers, 'Customer Name') == customer_name:
+                set_cell(row, headers, month_label, amount)
+                break
+
+        locked_save(wb, EXCEL_FILE)
+        return True
+    except Exception as e:
+        logger.error(f"Error saving monthly balance: {e}")
+        return False
+
+
+# === CUSTOMER DATA FUNCTIONS ===
 
 def save_customer_notes(sheet_name, customer_name, notes):
     try:
         wb = load_workbook(EXCEL_FILE)
         ws = wb[sheet_name]
+        headers = get_header_map(ws)
         for row in ws.iter_rows(min_row=2):
-            if row[3].value == customer_name:
-                row[10].value = notes
+            if get_cell(row, headers, 'Customer Name') == customer_name:
+                set_cell(row, headers, 'Notes', notes)
                 break
-        wb.save(EXCEL_FILE)
+        locked_save(wb, EXCEL_FILE)
         return True
     except Exception as e:
+        logger.error(f"Error saving notes: {e}")
         st.error(f"Error saving notes: {e}")
         return False
+
 
 def save_notes2(sheet_name, customer_name, notes2):
     try:
         wb = load_workbook(EXCEL_FILE)
         ws = wb[sheet_name]
+        headers = get_header_map(ws)
         for row in ws.iter_rows(min_row=2):
-            if row[3].value == customer_name:
-                row[12].value = notes2
+            if get_cell(row, headers, 'Customer Name') == customer_name:
+                set_cell(row, headers, 'Notes2', notes2)
                 break
-        wb.save(EXCEL_FILE)
+        locked_save(wb, EXCEL_FILE)
         return True
     except Exception as e:
+        logger.error(f"Error saving notes2: {e}")
         st.error(f"Error saving notes2: {e}")
         return False
+
+
+def save_modem_number(sheet_name, customer_name, modem_number):
+    try:
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[sheet_name]
+        headers = get_header_map(ws)
+        for row in ws.iter_rows(min_row=2):
+            if get_cell(row, headers, 'Customer Name') == customer_name:
+                set_cell(row, headers, 'Modem Numbers', modem_number)
+                break
+        locked_save(wb, EXCEL_FILE)
+        return True
+    except Exception as e:
+        logger.error(f"Error saving modem number: {e}")
+        return False
+
 
 def save_due_date(sheet_name, customer_name, due_day):
     try:
         wb = load_workbook(EXCEL_FILE)
         ws = wb[sheet_name]
+        headers = get_header_map(ws)
         for row in ws.iter_rows(min_row=2):
-            if row[3].value == customer_name:
-                row[11].value = due_day
+            if get_cell(row, headers, 'Customer Name') == customer_name:
+                set_cell(row, headers, 'Due Day', due_day)
                 break
-        wb.save(EXCEL_FILE)
+        locked_save(wb, EXCEL_FILE)
         return True
     except Exception as e:
+        logger.error(f"Error saving due date: {e}")
         st.error(f"Error saving due date: {e}")
         return False
+
 
 def save_customer_info(sheet_name, customer_name, new_name, phone, card_number, exp, cvv, plan_cost, original_phone=None, row_index=None):
     try:
         wb = load_workbook(EXCEL_FILE)
         ws = wb[sheet_name]
+        headers = get_header_map(ws)
         target_row = None
+
         if row_index is not None:
             excel_row_num = row_index + 2
             for row in ws.iter_rows(min_row=excel_row_num, max_row=excel_row_num):
@@ -158,147 +296,274 @@ def save_customer_info(sheet_name, customer_name, new_name, phone, card_number, 
                 break
         else:
             for row in ws.iter_rows(min_row=2):
-                if str(row[3].value).strip() == str(customer_name).strip():
+                if str(get_cell(row, headers, 'Customer Name', '')).strip() == str(customer_name).strip():
                     target_row = row
                     break
+
         if target_row is None:
             return False
-        target_row[2].value = plan_cost
-        target_row[3].value = new_name
-        target_row[4].value = card_number
-        target_row[5].value = exp
-        target_row[6].value = cvv
-        target_row[9].value = phone
-        wb.save(EXCEL_FILE)
+
+        set_cell(target_row, headers, 'Plan Cost', plan_cost)
+        set_cell(target_row, headers, 'Customer Name', new_name)
+        set_cell(target_row, headers, 'Card Number', card_number)
+        set_cell(target_row, headers, 'Exp', exp)
+        set_cell(target_row, headers, 'CVV', cvv)
+        set_cell(target_row, headers, 'Phone', phone)
+
+        locked_save(wb, EXCEL_FILE)
+        logger.info(f"Updated customer info for {customer_name} in {sheet_name}")
         return True
     except Exception as e:
+        logger.error(f"Error saving customer info: {e}")
         st.error(f"Error saving customer info: {e}")
         return False
 
-def get_balance(customer):
-    # First check if Amount Due column has value, otherwise calculate from monthly
-    amount_due = customer.get('Amount Due', '')
-    
-    # If Amount Due is empty/0, calculate from monthly balances
-    if not amount_due or str(amount_due).strip() == '' or str(amount_due).strip().lower() == 'nan':
-        total = 0
-        for month in MONTHS_2026:
-            val = customer.get(month, 0)
-            try:
-                total += float(val) if val else 0
-            except:
-                pass
-        return total
-    if amount_due and str(amount_due).strip() and str(amount_due).strip().lower() != 'nan':
-        try:
-            val = float(str(amount_due).strip())
-            return val
-        except:
-            pass
-    return 0
 
-# Custom styling
-st.markdown("""
-    <style>
-    .main { background-color: #f5f5f5; }
-    .stButton>button { width: 100%; }
-    .customer-card {
-        background-color: white;
-        padding: 20px;
-        border-radius: 10px;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-        margin-bottom: 20px;
-    }
-    </style>
-""", unsafe_allow_html=True)
+def get_balance(customer):
+    """Calculate customer balance: prefer sum of monthly columns, fallback to Amount Due."""
+    # First try monthly totals
+    total_monthly = 0
+    has_monthly = False
+    for month in MONTHS_2026:
+        val = safe_float(customer.get(month, 0))
+        if val != 0:
+            has_monthly = True
+        total_monthly += val
+
+    if has_monthly:
+        return total_monthly
+
+    # Fallback to Amount Due column
+    return safe_float(customer.get('Amount Due', 0))
+
+
+# === PAYMENT FUNCTIONS ===
+
+def save_payment(sheet_name, customer_name, payment_amount, pay_month=None, notes="", advance_due=False):
+    """Save a payment. If pay_month specified, deduct from that month's balance.
+
+    If advance_due=True, also advances the Due Day by 30 days from the current
+    due date — all in one atomic save to the Excel file.
+    Returns (success: bool, new_due_date: datetime or None).
+    """
+    new_due_date = None
+    try:
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[sheet_name]
+        headers = get_header_map(ws)
+
+        for row in ws.iter_rows(min_row=2):
+            if get_cell(row, headers, 'Customer Name') != customer_name:
+                continue
+
+            now = datetime.now()
+            timestamp = now.strftime('%Y-%m-%d %I:%M %p')
+
+            if pay_month and pay_month in headers:
+                # Apply payment to specific month — clear the balance
+                current_val = safe_float(get_cell(row, headers, pay_month, 0))
+                new_val = max(0, current_val - payment_amount)
+                set_cell(row, headers, pay_month, new_val)
+            else:
+                # Apply to Amount Due directly
+                current_balance = safe_float(get_cell(row, headers, 'Amount Due', 0))
+                new_balance = current_balance - payment_amount
+                set_cell(row, headers, 'Amount Due', new_balance)
+
+            # Recalculate total Amount Due from all months
+            total = 0
+            for m in MONTHS_2026:
+                total += safe_float(get_cell(row, headers, m, 0))
+            row_num = row[0].row
+            set_cell(row, headers, 'Amount Due', f'=SUM(N{row_num}:Y{row_num})')
+
+            # Update status
+            if total <= 0:
+                set_cell(row, headers, 'Status', 'Paid')
+            else:
+                set_cell(row, headers, 'Status', 'Partial')
+
+            # Advance due date if requested (current month payment only)
+            if advance_due:
+                current_due = get_cell(row, headers, 'Due Day')
+                if current_due is not None:
+                    try:
+                        current_due_int = int(current_due)
+                        max_day = calendar.monthrange(now.year, now.month)[1]
+                        due_day_clamped = min(current_due_int, max_day)
+                        current_due_date = datetime(now.year, now.month, due_day_clamped)
+                        new_due_date = current_due_date + timedelta(days=30)
+                        set_cell(row, headers, 'Due Day', new_due_date.day)
+                        set_cell(row, headers, 'Charge Date', new_due_date.strftime('%Y-%m-%d'))
+                        logger.info(f"Due date for {customer_name}: {current_due_date.strftime('%m/%d')} -> {new_due_date.strftime('%m/%d/%Y')}")
+                    except (ValueError, TypeError) as e:
+                        logger.error(f"Error advancing due date for {customer_name}: {e}")
+
+            # Append payment with date AND time to Notes
+            existing_notes = str(get_cell(row, headers, 'Notes', '') or '')
+            month_label = dict(MONTHS_DISPLAY).get(pay_month, pay_month) if pay_month else ''
+            payment_info = f"Paid ${payment_amount:.2f}"
+            if month_label:
+                payment_info += f" ({month_label})"
+            payment_info += f" on {timestamp}"
+            if new_due_date:
+                payment_info += f" | Next due: {new_due_date.strftime('%m/%d/%Y')}"
+            if notes:
+                payment_info += f" - {notes}"
+            new_notes = (existing_notes + " | " + payment_info) if existing_notes else payment_info
+            set_cell(row, headers, 'Notes', new_notes)
+
+            break
+
+        locked_save(wb, EXCEL_FILE)
+        logger.info(f"Payment ${payment_amount:.2f} recorded for {customer_name} in {sheet_name}")
+        return True, new_due_date
+    except Exception as e:
+        logger.error(f"Error saving payment: {e}")
+        st.error(f"Error saving: {e}")
+        return False, None
+
+
+def advance_due_date(sheet_name, customer_name, days=30):
+    """Advance the due date by calculating 30 days from the current due date.
+
+    Uses the current due day + current month/year to build an actual date,
+    adds 30 days, and stores the new day-of-month as the Due Day.
+    Also updates the Charge Date to the new due date.
+    """
+    try:
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[sheet_name]
+        headers = get_header_map(ws)
+
+        new_due_date = None
+        for row in ws.iter_rows(min_row=2):
+            if get_cell(row, headers, 'Customer Name') == customer_name:
+                current_due = get_cell(row, headers, 'Due Day')
+                if current_due is not None:
+                    try:
+                        current_due_int = int(current_due)
+                        now = datetime.now()
+                        # Build the actual due date from the due day + current month/year
+                        # Clamp the day to the max days in the current month
+                        max_day = calendar.monthrange(now.year, now.month)[1]
+                        due_day_clamped = min(current_due_int, max_day)
+                        current_due_date = datetime(now.year, now.month, due_day_clamped)
+                        # Add 30 days to get next due date
+                        new_due_date = current_due_date + timedelta(days=days)
+                        set_cell(row, headers, 'Due Day', new_due_date.day)
+                        # Update Charge Date to new due date
+                        set_cell(row, headers, 'Charge Date', new_due_date.strftime('%Y-%m-%d'))
+                        logger.info(f"Due date for {customer_name}: {current_due_date.strftime('%m/%d')} -> {new_due_date.strftime('%m/%d/%Y')}")
+                    except (ValueError, TypeError) as e:
+                        logger.error(f"Error calculating due date for {customer_name}: {e}")
+                break
+
+        locked_save(wb, EXCEL_FILE)
+        return new_due_date
+    except Exception as e:
+        logger.error(f"Error advancing due date: {e}")
+        return None
+
+
+# === DATA LOADING & SEARCH ===
 
 def load_excel():
+    """Load all sheets from the Excel file into DataFrames.
+
+    Note: Amount Due may contain Excel formulas (=SUM(N:Y)).
+    pandas/openpyxl with data_only may return None for formulas if the file
+    hasn't been opened in Excel. We recalculate Amount Due from monthly columns.
+    """
     try:
         excel_file = pd.ExcelFile(EXCEL_FILE)
         all_data = {}
         for sheet in excel_file.sheet_names:
-            if sheet != "Summary":
-                df = pd.read_excel(excel_file, sheet_name=sheet)
-                df['Service'] = sheet
-                if 'Due Day' not in df.columns:
-                    if 'Charge Date' in df.columns:
-                        try:
-                            df['Charge Date'] = pd.to_datetime(df['Charge Date'], errors='coerce')
-                            df['Due Day'] = df['Charge Date'].dt.day
-                        except:
-                            df['Due Day'] = None
-                all_data[sheet] = df
+            if sheet in ("Summary", "1"):
+                continue
+            df = pd.read_excel(excel_file, sheet_name=sheet)
+            if df.empty:
+                continue
+            df['Service'] = sheet
+
+            # Ensure Due Day column exists
+            if 'Due Day' not in df.columns:
+                if 'Charge Date' in df.columns:
+                    try:
+                        df['Charge Date'] = pd.to_datetime(df['Charge Date'], errors='coerce')
+                        df['Due Day'] = df['Charge Date'].dt.day
+                    except Exception:
+                        df['Due Day'] = None
+
+            # Recalculate Amount Due from monthly columns
+            # (handles formula strings and None values from openpyxl)
+            for idx, row in df.iterrows():
+                monthly_total = 0
+                for m in MONTHS_2026:
+                    monthly_total += safe_float(row.get(m, 0))
+                if monthly_total > 0:
+                    df.at[idx, 'Amount Due'] = monthly_total
+                else:
+                    # Try to use existing Amount Due if it's a real number
+                    existing = row.get('Amount Due', 0)
+                    df.at[idx, 'Amount Due'] = safe_float(existing)
+
+            all_data[sheet] = df
         return all_data, excel_file
     except Exception as e:
+        logger.error(f"Error loading file: {e}")
         st.error(f"Error loading file: {e}")
         return None, None
 
-def save_payment(sheet_name, customer_name, payment_amount, notes=""):
-    try:
-        wb = load_workbook(EXCEL_FILE)
-        ws = wb[sheet_name]
-        for row in ws.iter_rows(min_row=2):
-            if row[3].value == customer_name:
-                current_amount_due = row[7].value
-                try:
-                    current_balance = float(str(current_amount_due).strip()) if current_amount_due and str(current_amount_due).strip() else 0
-                except:
-                    current_balance = 0
-                new_balance = current_balance - payment_amount
-                row[7].value = new_balance
-                row[8].value = "Paid" if new_balance <= 0 else "Partial"
-                today = datetime.now().strftime('%Y-%m-%d')
-                row[11].value = today
-                row[12].value = (datetime.now() + timedelta(days=30)).day
-                existing_notes = str(row[10].value) if row[10].value else ""
-                payment_info = f"Payment ${payment_amount:.2f} on {today}"
-                if notes:
-                    payment_info += f": {notes}"
-                row[10].value = (existing_notes + " | " + payment_info) if existing_notes else payment_info
-                break
-        wb.save(EXCEL_FILE)
-        return True
-    except Exception as e:
-        st.error(f"Error saving: {e}")
-        return False
+
+def _build_customer_result(row, service, idx=None):
+    """Build a standardized customer result dict from a DataFrame row."""
+    monthly = {}
+    for m in MONTHS_2026:
+        monthly[m] = row.get(m, 0)
+
+    result = {
+        'Service': service,
+        'Customer Name': row.get('Customer Name', ''),
+        'Phone': row.get('Phone', ''),
+        'Amount Due': row.get('Amount Due', ''),
+        'Status': row.get('Status', ''),
+        'Card Number': row.get('Card Number', ''),
+        'Exp': row.get('Exp', ''),
+        'CVV': row.get('CVV', ''),
+        'Plan Cost': row.get('Plan Cost', ''),
+        'Charge Date': row.get('Charge Date', ''),
+        'Due Day': row.get('Due Day', ''),
+        'Notes': row.get('Notes', ''),
+        'Notes2': row.get('Notes2', ''),
+        'Payment Date': row.get('Payment Date', ''),
+        'Modem Numbers': row.get('Modem Numbers', ''),
+    }
+    if idx is not None:
+        result['row_index'] = idx
+    result.update(monthly)
+    return result
+
 
 def search_customers(all_data, query):
+    """Search customers by name, phone, or card number."""
     results = []
+    # Escape special regex characters in the query
+    import re
+    escaped_query = re.escape(query)
     for service, df in all_data.items():
         if df is None or df.empty:
             continue
         mask = (
-            df['Customer Name'].astype(str).str.contains(query, case=False, na=False) |
-            df['Phone'].astype(str).str.contains(query, case=False, na=False) |
-            df['Card Number'].astype(str).str.contains(query, case=False, na=False)
+            df['Customer Name'].astype(str).str.contains(escaped_query, case=False, na=False) |
+            df['Phone'].astype(str).str.contains(escaped_query, case=False, na=False) |
+            df['Card Number'].astype(str).str.contains(escaped_query, case=False, na=False)
         )
         matches = df[mask]
         for idx, row in matches.iterrows():
-            # Get monthly balances
-            monthly = {}
-            for m in MONTHS_2026:
-                monthly[m] = row.get(m, 0)
-            
-            result = {
-                'Service': service,
-                'row_index': idx,
-                'Customer Name': row.get('Customer Name', ''),
-                'Phone': row.get('Phone', ''),
-                'Amount Due': row.get('Amount Due', ''),
-                'Status': row.get('Status', ''),
-                'Card Number': row.get('Card Number', ''),
-                'Exp': row.get('Exp', ''),
-                'CVV': row.get('CVV', ''),
-                'Plan Cost': row.get('Plan Cost', ''),
-                'Charge Date': row.get('Charge Date', ''),
-                'Due Day': row.get('Due Day', ''),
-                'Notes': row.get('Notes', ''),
-                'Notes2': row.get('Notes2', ''),
-                'Payment Date': row.get('Payment Date', ''),
-            }
-            result.update(monthly)
-            results.append(result)
+            results.append(_build_customer_result(row, service, idx))
     return results
+
 
 def get_customers_by_due_day(all_data, due_day):
     results = []
@@ -306,443 +571,454 @@ def get_customers_by_due_day(all_data, due_day):
         if df is None or df.empty:
             continue
         if 'Due Day' in df.columns:
-            matches = df[df['Due Day'] == due_day]
-            for _, row in matches.iterrows():
-                monthly = {}
-                for m in MONTHS_2026:
-                    monthly[m] = row.get(m, 0)
-                result = {
-                    'Service': service,
-                    'Customer Name': row.get('Customer Name', ''),
-                    'Phone': row.get('Phone', ''),
-                    'Amount Due': row.get('Amount Due', ''),
-                    'Status': row.get('Status', ''),
-                    'Card Number': row.get('Card Number', ''),
-                    'Exp': row.get('Exp', ''),
-                    'CVV': row.get('CVV', ''),
-                    'Plan Cost': row.get('Plan Cost', ''),
-                    'Charge Date': row.get('Charge Date', ''),
-                    'Due Day': row.get('Due Day', ''),
-                    'Notes': row.get('Notes', ''),
-                    'Notes2': row.get('Notes2', ''),
-                    'Payment Date': row.get('Payment Date', ''),
-                }
-                result.update(monthly)
-                results.append(result)
+            # Compare as integers to handle mixed types
+            for _, row in df.iterrows():
+                try:
+                    row_due = int(row.get('Due Day', 0)) if row.get('Due Day') is not None and not pd.isna(row.get('Due Day')) else None
+                except (ValueError, TypeError):
+                    row_due = None
+                if row_due == due_day:
+                    results.append(_build_customer_result(row, service))
     return results
 
-def auto_charge_due_today(charge_date=None):
-    """Auto-charge all customers whose due date matches the specified date"""
-    if charge_date is None:
-        charge_date = datetime.now()
-    
-    current_day = charge_date.day
-    current_month = charge_date.month
-    
+
+def auto_charge_due_today():
+    """Auto-charge all customers whose due date matches today."""
+    today = datetime.now()
+    current_day = today.day
+    current_month = today.month
     month_key = MONTH_MAP.get(current_month, 'Mar_2026')
-    
-    debug_info = []
+
     charged = []
     try:
-        debug_info.append(f"Date: day={current_day}, month={current_month}, month_key={month_key}")
-        debug_info.append(f"File: {EXCEL_FILE}")
         wb = load_workbook(EXCEL_FILE)
-        
+
         for sheet_name in wb.sheetnames:
             if sheet_name == 'Summary':
                 continue
             ws = wb[sheet_name]
-            
-            headers = {col.value: idx for idx, col in enumerate(ws[1], start=1)}
-            due_day_col = headers.get('Due Day')
-            plan_cost_col = headers.get('Plan Cost')
-            amount_due_col = headers.get('Amount Due')
-            month_col = headers.get(month_key)
-            
-            # Add month columns if they don't exist
-            if month_col is None:
+            headers = get_header_map(ws)
+
+            # Ensure month columns exist
+            if month_key not in headers:
                 max_col = ws.max_column
                 for m in MONTHS_2026:
-                    ws.cell(row=1, column=max_col + 1, value=m)
-                    max_col += 1
-                headers = {col.value: idx for idx, col in enumerate(ws[1], start=1)}
-                due_day_col = headers.get('Due Day')
-                plan_cost_col = headers.get('Plan Cost')
-                amount_due_col = headers.get('Amount Due')
-                month_col = headers.get(month_key)
-            
-            if not all([due_day_col, plan_cost_col, month_col]):
+                    if m not in headers:
+                        max_col += 1
+                        ws.cell(row=1, column=max_col, value=m)
+                headers = get_header_map(ws)
+
+            if not all(headers.get(k) for k in ['Due Day', 'Plan Cost', month_key]):
                 continue
-            
+
             for row in ws.iter_rows(min_row=2):
-                due_day = row[due_day_col - 1].value
-                plan_cost = row[plan_cost_col - 1].value if plan_cost_col else None
-                customer_name = row[3].value
-                current_month_val = row[month_col - 1].value
-                
-                # Compare as integers
+                due_day = get_cell(row, headers, 'Due Day')
+                plan_cost = get_cell(row, headers, 'Plan Cost')
+                customer_name = get_cell(row, headers, 'Customer Name')
+
                 try:
-                    due_day_int = int(due_day) if due_day else None
-                except:
+                    due_day_int = int(due_day) if due_day is not None else None
+                except (ValueError, TypeError):
                     due_day_int = None
-                
-                if due_day_int == current_day:
+
+                if due_day_int != current_day:
+                    continue
+
+                try:
+                    charge_amount = safe_float(plan_cost)
+                    if charge_amount <= 0:
+                        continue
+
+                    # Add charge to current month
+                    current_val = safe_float(get_cell(row, headers, month_key, 0))
+                    set_cell(row, headers, month_key, current_val + charge_amount)
+
+                    # Update total Amount Due with formula
+                    row_num = row[0].row
+                    set_cell(row, headers, 'Amount Due', f'=SUM(N{row_num}:Y{row_num})')
+
+                    # Advance due date: calculate 30 days from current due date
                     try:
-                        # Use Plan Cost as the charge amount
-                        charge_amount = float(plan_cost) if plan_cost else 0
-                        debug_info.append(f"Charging: {customer_name}, amount={charge_amount}, month_col={month_col}")
-                        
-                        if charge_amount > 0:
-                            # Add to existing balance
-                            current_val = float(current_month_val) if current_month_val else 0
-                            new_val = current_val + charge_amount
-                            row[month_col - 1].value = new_val
-                            
-                            # Update amount due (sum all months)
-                            total = 0
-                            for m in MONTHS_2026:
-                                m_col = headers.get(m)
-                                if m_col:
-                                    val = row[m_col - 1].value
-                                    total += float(val) if val else 0
-                            if amount_due_col:
-                                row[amount_due_col - 1].value = total
-                            
-                            # Advance due date by 30 days
-                            current_due = row[due_day_col - 1].value
-                            if current_due:
-                                try:
-                                    current_due = int(current_due)
-                                    new_due = current_due + 30
-                                    if new_due > 31:
-                                        new_due = new_due % 30
-                                        if new_due == 0:
-                                            new_due = 30
-                                    row[due_day_col - 1].value = new_due
-                                except:
-                                    pass
-                            
-                            charged.append(f"{customer_name} ({sheet_name}): ${charge_amount}")
-                    except Exception as e:
+                        max_day = calendar.monthrange(today.year, today.month)[1]
+                        due_day_clamped = min(current_day, max_day)
+                        current_due_date = datetime(today.year, today.month, due_day_clamped)
+                        new_due_date = current_due_date + timedelta(days=30)
+                        set_cell(row, headers, 'Due Day', new_due_date.day)
+                        set_cell(row, headers, 'Charge Date', new_due_date.strftime('%Y-%m-%d'))
+                    except Exception:
                         pass
-        
-        wb.save(EXCEL_FILE)
-        if charged:
-            return charged
-        return debug_info
+
+                    charged.append(f"{customer_name} ({sheet_name}): ${charge_amount:.2f}")
+                    logger.info(f"Auto-charged {customer_name} ({sheet_name}): ${charge_amount:.2f}")
+                except Exception as e:
+                    logger.error(f"Error charging {customer_name}: {e}")
+
+        locked_save(wb, EXCEL_FILE)
+        return charged
     except Exception as e:
+        logger.error(f"Auto-charge error: {e}")
         return [f"Error: {str(e)}"]
 
-def advance_due_date(sheet_name, customer_name, days=30):
-    """Advance the due date by specified days (default 30)"""
-    try:
-        wb = load_workbook(EXCEL_FILE)
-        ws = wb[sheet_name]
-        
-        headers = {col.value: idx for idx, col in enumerate(ws[1], start=1)}
-        due_day_col = headers.get('Due Day')
-        
-        if not due_day_col:
-            return False
-        
-        for row in ws.iter_rows(min_row=2):
-            if row[3].value == customer_name:
-                current_due = row[due_day_col - 1].value
-                if current_due:
-                    try:
-                        current_due = int(current_due)
-                        new_due = current_due + days
-                        if new_due > 31:
-                            new_due = new_due % 30
-                            if new_due == 0:
-                                new_due = 30
-                        row[due_day_col - 1].value = new_due
-                    except:
-                        pass
-                break
-        
-        wb.save(EXCEL_FILE)
-        return True
-    except:
-        return False
 
 def get_past_due_customers(all_data):
+    """Get all customers with outstanding balances."""
     results = []
+    today_day = datetime.now().day
     for service, df in all_data.items():
         if df is None or df.empty:
             continue
-        if 'Due Day' in df.columns and 'Status' in df.columns:
-            for _, row in df.iterrows():
-                due_day = row.get('Due Day')
-                status = row.get('Status', '')
-                amount_due = row.get('Amount Due', 0)
-                if due_day is None or pd.isna(due_day):
-                    continue
-                status_str = str(status).upper() if status else ''
-                is_paid = 'PAID' in status_str or status_str == 'READY'
-                try:
-                    has_balance = float(amount_due) > 0 if amount_due else False
-                except:
-                    has_balance = False
-                if not is_paid and has_balance:
-                    monthly = {}
-                    for m in MONTHS_2026:
-                        monthly[m] = row.get(m, 0)
-                    result = {
-                        'Service': service,
-                        'Customer Name': row.get('Customer Name', ''),
-                        'Phone': row.get('Phone', ''),
-                        'Amount Due': row.get('Amount Due', ''),
-                        'Status': row.get('Status', ''),
-                        'Card Number': row.get('Card Number', ''),
-                        'Exp': row.get('Exp', ''),
-                        'CVV': row.get('CVV', ''),
-                        'Plan Cost': row.get('Plan Cost', ''),
-                        'Charge Date': row.get('Charge Date', ''),
-                        'Due Day': row.get('Due Day', ''),
-                        'Notes': row.get('Notes', ''),
-                        'Notes2': row.get('Notes2', ''),
-                        'Payment Date': row.get('Payment Date', ''),
-                    }
-                    result.update(monthly)
-                    results.append(result)
+        for _, row in df.iterrows():
+            due_day = row.get('Due Day')
+            status = row.get('Status', '')
+            amount_due = row.get('Amount Due', 0)
+
+            if due_day is None or pd.isna(due_day):
+                continue
+
+            status_str = str(status).upper() if status else ''
+            is_paid = 'PAID' in status_str or status_str == 'READY'
+
+            has_balance = safe_float(amount_due) > 0
+
+            # Also check monthly totals
+            if not has_balance:
+                for m in MONTHS_2026:
+                    if safe_float(row.get(m, 0)) > 0:
+                        has_balance = True
+                        break
+
+            if not is_paid and has_balance:
+                results.append(_build_customer_result(row, service))
     return results
+
 
 def get_collections_by_date(all_data, start_date, end_date):
     results = []
     for service, df in all_data.items():
         if df is None or df.empty:
             continue
-        if 'Payment Date' in df.columns:
-            for _, row in df.iterrows():
-                payment_date = row.get('Payment Date')
-                if payment_date is None or pd.isna(payment_date):
-                    continue
-                try:
-                    payment_date = pd.to_datetime(payment_date)
-                except:
-                    continue
-                if start_date <= payment_date.date() <= end_date:
-                    results.append({
-                        'Service': service,
-                        'Customer Name': row.get('Customer Name', ''),
-                        'Phone': row.get('Phone', ''),
-                        'Amount Collected': row.get('Amount Due', 0),
-                        'Status': row.get('Status', ''),
-                        'Payment Date': payment_date.strftime('%Y-%m-%d'),
-                        'Notes': row.get('Notes', '')
-                    })
+        if 'Payment Date' not in df.columns:
+            continue
+        for _, row in df.iterrows():
+            payment_date = row.get('Payment Date')
+            if payment_date is None or pd.isna(payment_date):
+                continue
+            try:
+                payment_date = pd.to_datetime(payment_date)
+            except (ValueError, TypeError):
+                continue
+            if start_date <= payment_date.date() <= end_date:
+                results.append({
+                    'Service': service,
+                    'Customer Name': row.get('Customer Name', ''),
+                    'Phone': row.get('Phone', ''),
+                    'Amount Collected': safe_float(row.get('Amount Due', 0)),
+                    'Status': row.get('Status', ''),
+                    'Payment Date': payment_date.strftime('%Y-%m-%d'),
+                    'Notes': row.get('Notes', '')
+                })
     return results
 
-# Main UI
-st.title("💳 Customer Payment Manager")
+
+# === UI HELPERS ===
+
+def display_customer_card(customer, index):
+    """Display a single customer's details and action forms."""
+    charge_date = customer.get('Charge Date', '')
+    if charge_date:
+        try:
+            charge_date = pd.to_datetime(charge_date).strftime('%Y-%m-%d')
+        except (ValueError, TypeError):
+            pass
+
+    balance = get_balance(customer)
+    monthly_balances = get_monthly_balances(customer)
+    total_from_aging = get_total_balance_from_months(monthly_balances)
+
+    # Balance display
+    if balance < 0:
+        balance_color = "green"
+        balance_display = f"CREDIT: ${abs(balance):.2f}"
+    elif balance == 0:
+        balance_color = "gray"
+        balance_display = "$0.00"
+    else:
+        balance_color = "red"
+        balance_display = f"${balance:.2f}"
+
+    status = str(customer.get('Status', '') or '').strip()
+    if not status:
+        status = 'No Status'
+
+    # Header
+    st.markdown(f"### {customer['Customer Name']}")
+
+    modem = str(customer.get('Modem Numbers', '') or '').strip()
+    if not modem or modem.lower() in ('nan', 'none'):
+        modem = ''
+
+    col_info1, col_info2, col_info3 = st.columns(3)
+    with col_info1:
+        st.write(f"**Service:** {customer['Service']}")
+        st.write(f"**Phone:** {customer.get('Phone', 'N/A')}")
+    with col_info2:
+        st.write(f"**Status:** {status}")
+        st.write(f"**Due Day:** {customer.get('Due Day', 'N/A')}")
+    with col_info3:
+        st.write(f"**Plan Cost:** ${safe_float(customer.get('Plan Cost', 0)):.2f}")
+        card_display = mask_card(customer.get('Card Number', ''))
+        st.write(f"**Card:** {card_display}")
+    if modem:
+        st.write(f"**Modem Number:** {modem}")
+
+    st.markdown(f"**Total Balance: :{balance_color}[{balance_display}]**")
+
+    # Monthly balances in a compact table
+    with st.expander("Monthly Balances (2026)", expanded=False):
+        cols = st.columns(6)
+        for j, (month_col, month_name) in enumerate(MONTHS_DISPLAY):
+            with cols[j % 6]:
+                val = monthly_balances.get(month_col, 0)
+                label = month_name[:3]
+                if val > 0:
+                    st.metric(label, f"${val:.2f}")
+                else:
+                    st.metric(label, "$0.00")
+        st.write(f"**Total from months:** ${total_from_aging:.2f}")
+
+    # Edit monthly balance
+    with st.expander("Edit Monthly Balance"):
+        col_edit1, col_edit2 = st.columns(2)
+        with col_edit1:
+            edit_month = st.selectbox("Select Month:", options=[m[0] for m in MONTHS_DISPLAY],
+                                      format_func=lambda x: dict(MONTHS_DISPLAY).get(x, x),
+                                      key=f"edit_month_{index}")
+        with col_edit2:
+            current_val = monthly_balances.get(edit_month, 0)
+            new_val = st.number_input("New Balance:", min_value=0.0, value=float(current_val),
+                                      step=5.0, key=f"edit_val_{index}")
+
+        if st.button(f"Save {dict(MONTHS_DISPLAY).get(edit_month, edit_month)} Balance",
+                     key=f"save_{index}"):
+            if save_monthly_balance(customer['Service'], customer['Customer Name'], edit_month, new_val):
+                update_amount_due_from_months(customer['Service'], customer['Customer Name'])
+                st.success("Balance saved!")
+                st.rerun()
+            else:
+                st.error("Error saving balance!")
+
+    # Post payment
+    with st.expander("Post Payment"):
+        col_pay1, col_pay2 = st.columns(2)
+        with col_pay1:
+            pay_month = st.selectbox("Apply to Month:", options=[m[0] for m in MONTHS_DISPLAY],
+                                     format_func=lambda x: dict(MONTHS_DISPLAY).get(x, x),
+                                     key=f"pay_month_{index}")
+        with col_pay2:
+            month_balance = monthly_balances.get(pay_month, 0)
+            pay_amount = st.number_input("Payment Amount:", min_value=0.0,
+                                         value=float(month_balance), step=5.0,
+                                         key=f"pay_amt_{index}")
+
+        pay_notes = st.text_input("Payment Notes (optional):", key=f"pay_notes_{index}")
+
+        # Show which month is current so user understands the due date logic
+        current_month_col = MONTH_MAP.get(datetime.now().month)
+        if pay_month == current_month_col:
+            st.caption("This is the current month — due date will advance 30 days after payment.")
+        else:
+            st.caption("This is a past/future month — due date will NOT change.")
+
+        if st.button(f"Apply Payment to {dict(MONTHS_DISPLAY).get(pay_month, pay_month)}",
+                     key=f"apply_pay_{index}"):
+            if pay_amount > 0:
+                # Only advance due date if paying the CURRENT month
+                is_current_month = (pay_month == current_month_col)
+                success, new_due_date = save_payment(
+                    customer['Service'], customer['Customer Name'],
+                    pay_amount, pay_month=pay_month, notes=pay_notes,
+                    advance_due=is_current_month
+                )
+                if success:
+                    if is_current_month and new_due_date:
+                        st.success(f"Payment of ${pay_amount:.2f} applied! Due Day updated to {new_due_date.day} (next due: {new_due_date.strftime('%m/%d/%Y')})")
+                    elif is_current_month:
+                        st.success(f"Payment of ${pay_amount:.2f} applied! Due date advanced.")
+                    else:
+                        month_name = dict(MONTHS_DISPLAY).get(pay_month, pay_month)
+                        st.success(f"Payment of ${pay_amount:.2f} applied to {month_name} (past due — due date unchanged).")
+                    st.rerun()
+                else:
+                    st.error("Error applying payment!")
+            else:
+                st.warning("Please enter a payment amount greater than $0.")
+
+    # Edit customer info
+    with st.expander("Edit Customer Info"):
+        with st.form(f"edit_form_{index}"):
+            new_name = st.text_input("Name", value=str(customer.get('Customer Name', '')))
+            phone = st.text_input("Phone", value=str(customer.get('Phone', '')))
+            card = st.text_input("Card Number", value=str(customer.get('Card Number', '')))
+            exp = st.text_input("Exp", value=str(customer.get('Exp', '')))
+            cvv = st.text_input("CVV", value=str(customer.get('CVV', '')), type="password")
+            plan = st.number_input("Plan Cost", value=safe_float(customer.get('Plan Cost', 0)))
+
+            # Modem Numbers
+            modem_val = str(customer.get('Modem Numbers', '') or '').strip()
+            if modem_val.lower() in ('nan', 'none'):
+                modem_val = ''
+            modem_input = st.text_input("Modem Number", value=modem_val)
+
+            # Notes
+            notes_val = str(customer.get('Notes', '') or '')
+            notes_input = st.text_area("Notes", value=notes_val)
+            notes2_val = str(customer.get('Notes2', '') or '')
+            notes2_input = st.text_area("Notes2", value=notes2_val)
+
+            submitted = st.form_submit_button("Save All Changes")
+            if submitted:
+                success = save_customer_info(
+                    customer['Service'], customer['Customer Name'],
+                    new_name, phone, card, exp, cvv, plan,
+                    row_index=customer.get('row_index')
+                )
+                if success:
+                    # Save notes and modem number separately
+                    save_customer_notes(customer['Service'], new_name, notes_input)
+                    save_notes2(customer['Service'], new_name, notes2_input)
+                    save_modem_number(customer['Service'], new_name, modem_input)
+                    st.success("Customer info saved!")
+                    st.rerun()
+                else:
+                    st.error("Error saving customer info!")
+
+    st.divider()
+
+
+# === MAIN UI ===
+
+st.title("📡 K-Wireless Payment Manager")
 
 all_data, excel_file = load_excel()
 
 if all_data is None:
+    st.error("Could not load data. Check that the Excel file exists and is valid.")
     st.stop()
 
-# Sidebar
+# Sidebar Summary
 with st.sidebar:
-    st.header("📊 Summary")
+    st.header("Summary")
     total_customers = 0
-    total_revenue = 0
+    total_outstanding = 0
     for service, df in all_data.items():
         if df is not None and not df.empty:
             count = len(df)
             total_customers += count
             revenue = 0
-            for amt in df['Amount Due'].fillna(0):
-                try:
-                    if amt and str(amt).strip():
-                        revenue += float(str(amt).strip())
-                except:
-                    pass
-            total_revenue += revenue
-            st.metric(service, f"{count} customers", f"${revenue:,.2f}")
+            for _, row in df.iterrows():
+                # Use monthly totals if available, fallback to Amount Due
+                row_total = 0
+                for m in MONTHS_2026:
+                    row_total += safe_float(row.get(m, 0))
+                if row_total == 0:
+                    row_total = safe_float(row.get('Amount Due', 0))
+                revenue += row_total
+            total_outstanding += revenue
+            st.metric(service, f"{count} customers", f"${revenue:,.2f} outstanding")
     st.divider()
     st.metric("Total Customers", total_customers)
-    st.metric("Total Revenue", f"${total_revenue:,.2f}")
+    st.metric("Total Outstanding", f"${total_outstanding:,.2f}")
 
 # Main content
-st.header("🔍 Search & Filter")
+st.header("Search & Manage")
 
 # Auto-charge section
-with st.expander("⚡ Auto-Charge"):
-    col1, col2 = st.columns(2)
-    with col1:
-        charge_date = st.date_input("Select Date to Charge", value=datetime.now().date())
-    with col2:
-        st.write(f"Day: {charge_date.day}, Month: {MONTH_MAP.get(charge_date.month)}")
-    
-    if st.button("⚡ Run Auto-Charge"):
-        with st.spinner("Charging customers..."):
-            # Convert date to datetime
-            charge_dt = datetime.combine(charge_date, datetime.min.time())
-            results = auto_charge_due_today(charge_dt)
-            if results:
-                # Check if charged or debug
-                if any("Charging:" in str(r) for r in results):
-                    st.success(f"Charged {len([r for r in results if 'Charging:' in str(r)])} customer(s)!")
-                    for r in results:
-                        st.write(f"• {r}")
-                else:
-                    st.warning("Debug info:")
-                    for r in results:
-                        st.caption(r)
-            else:
-                st.info("No customers to charge on selected date")
+with st.expander("Auto-Charge Due Today"):
+    current_month_name = dict(MONTHS_DISPLAY).get(MONTH_MAP.get(datetime.now().month, ''), '')
+    st.write(f"Charge all customers with due date = day **{datetime.now().day}** "
+             f"({current_month_name} {datetime.now().year})")
+    # Show results from previous auto-charge run
+    if 'auto_charge_results' in st.session_state:
+        results = st.session_state.pop('auto_charge_results')
+        if results and not any('Error' in r for r in results):
+            st.success(f"Charged {len(results)} customer(s)!")
+            for r in results:
+                st.write(f"- {r}")
+        elif results and any('Error' in r for r in results):
+            for r in results:
+                st.error(r)
+        else:
+            st.info("No customers to charge today.")
 
-tab1, tab2, tab3, tab4 = st.tabs(["📝 Search by Name", "📅 Filter by Due Date", "⚠️ Past Due", "💰 Collections History"])
+    col_ac1, col_ac2 = st.columns([1, 3])
+    with col_ac1:
+        if st.button("Run Auto-Charge"):
+            with st.spinner("Processing charges..."):
+                results = auto_charge_due_today()
+                st.session_state['auto_charge_results'] = results
+                st.rerun()
+
+# Tabs
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "Search", "Filter by Due Date", "Past Due", "Collections History", "Add Customer"
+])
 
 with tab1:
-    search_query = st.text_input("Search by name, phone, or account:", placeholder="Enter name or phone...", key="search_name")
+    search_query = st.text_input("Search by name, phone, or card number:",
+                                 placeholder="Enter name or phone...", key="search_name")
     if search_query:
         results = search_customers(all_data, search_query)
         if results:
             st.write(f"Found **{len(results)}** customer(s)")
             for i, customer in enumerate(results):
                 with st.container():
-                    charge_date = customer.get('Charge Date', '')
-                    if charge_date:
-                        try:
-                            charge_date = pd.to_datetime(charge_date).strftime('%Y-%m-%d')
-                        except:
-                            pass
-                    
-                    balance = get_balance(customer)
-                    has_credit = balance < 0
-                    status = str(customer.get('Status', '')).upper() if customer.get('Status') else ''
-                    is_paid = 'PAID' in status or status == 'READY'
-                    
-                    if has_credit:
-                        balance_display = f"💚 CREDIT: ${abs(balance):.2f}"
-                    elif balance == 0:
-                        balance_display = "$0.00"
-                    else:
-                        balance_display = f"${balance:.2f}"
-                    
-                    payment_date = customer.get('Payment Date', '') or ''
-                    if payment_date:
-                        try:
-                            payment_date = pd.to_datetime(payment_date).strftime('%Y-%m-%d')
-                        except:
-                            pass
-                    
-                    # Get monthly balances
-                    monthly_balances = get_monthly_balances(customer)
-                    total_from_aging = get_total_balance_from_months(monthly_balances)
-                    
-                    # Show 12-month balance display
-                    months_list = [
-                        ('Jan_2026', 'January'), ('Feb_2026', 'February'), ('Mar_2026', 'March'),
-                        ('Apr_2026', 'April'), ('May_2026', 'May'), ('Jun_2026', 'June'),
-                        ('Jul_2026', 'July'), ('Aug_2026', 'August'), ('Sep_2026', 'September'),
-                        ('Oct_2026', 'October'), ('Nov_2026', 'November'), ('Dec_2026', 'December')
-                    ]
-                    
-                    st.write(f"### {customer['Customer Name']}")
-                    st.write(f"**Service:** {customer['Service']} | **Phone:** {customer['Phone']} | **Status:** {customer['Status']}")
-                    st.write(f"**Balance:** {balance_display} | **Due Day:** {customer.get('Due Day', 'N/A')}")
-                    
-                    # Show monthly balances
-                    st.write("### 📊 Monthly Balance (2026)")
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        for month_col, month_name in months_list[:4]:
-                            val = monthly_balances.get(month_col, 0)
-                            st.metric(month_name, f"${val:.2f}")
-                    with col2:
-                        for month_col, month_name in months_list[4:8]:
-                            val = monthly_balances.get(month_col, 0)
-                            st.metric(month_name, f"${val:.2f}")
-                    with col3:
-                        for month_col, month_name in months_list[8:]:
-                            val = monthly_balances.get(month_col, 0)
-                            st.metric(month_name, f"${val:.2f}")
-                    
-                    st.divider()
-                    st.metric("💰 Total Balance", f"${total_from_aging:.2f}")
-                    
-                    # Edit monthly balance
-                    st.write("### ✏️ Edit Monthly Balance")
-                    col_edit1, col_edit2 = st.columns(2)
-                    with col_edit1:
-                        edit_month = st.selectbox("Select Month:", options=[m[0] for m in months_list], key=f"edit_month_{i}")
-                    with col_edit2:
-                        current_val = monthly_balances.get(edit_month, 0)
-                        new_val = st.number_input("New Balance:", min_value=0.0, value=float(current_val), step=5.0, key=f"edit_val_{i}")
-                    
-                    if st.button(f"💾 Save {edit_month}", key=f"save_{i}"):
-                        if save_monthly_balance(customer['Service'], customer['Customer Name'], edit_month, new_val):
-                            # Also update total Amount Due
-                            update_amount_due_from_months(customer['Service'], customer['Customer Name'])
-                            st.success("Saved!")
-                            st.rerun()
-                        else:
-                            st.error("Error saving!")
-                    
-                    # Post payment to specific month
-                    st.write("### 💰 Post Payment to Month")
-                    col_pay1, col_pay2 = st.columns(2)
-                    with col_pay1:
-                        pay_month = st.selectbox("Select Month to Pay:", options=[m[0] for m in months_list], key=f"pay_month_{i}")
-                    with col_pay2:
-                        pay_amount = st.number_input("Payment Amount:", min_value=0.0, value=float(monthly_balances.get(pay_month, 0)), step=5.0, key=f"pay_amt_{i}")
-                    
-                    if st.button(f"✅ Apply Payment to {pay_month}", key=f"apply_pay_{i}"):
-                        if pay_amount > 0:
-                            current = monthly_balances.get(pay_month, 0)
-                            new_balance = max(0, current - pay_amount)
-                            if save_monthly_balance(customer['Service'], customer['Customer Name'], pay_month, new_balance):
-                                update_amount_due_from_months(customer['Service'], customer['Customer Name'])
-                                
-                                # Check if paying current month - advance due date by 30 days
-                                current_month_col = MONTH_MAP.get(datetime.now().month)
-                                if pay_month == current_month_col:
-                                    advance_due_date(customer['Service'], customer['Customer Name'], days=30)
-                                    st.success(f"Payment applied to {pay_month}! Due date advanced 30 days.")
-                                else:
-                                    st.success(f"Payment applied to {pay_month}!")
-                                st.rerun()
-                            else:
-                                st.error("Error applying payment!")
-                    
-                    with st.expander("💳 Edit Customer Info"):
-                        with st.form(f"edit_form_{i}"):
-                            new_name = st.text_input("Name", value=customer.get('Customer Name', ''))
-                            phone = st.text_input("Phone", value=customer.get('Phone', ''))
-                            card = st.text_input("Card", value=customer.get('Card Number', ''))
-                            exp = st.text_input("Exp", value=customer.get('Exp', ''))
-                            cvv = st.text_input("CVV", value=customer.get('CVV', ''))
-                            plan = st.number_input("Plan Cost", value=float(customer.get('Plan Cost', 0) or 0))
-                            submitted = st.form_submit_button("Save Info")
-                            if submitted:
-                                if save_customer_info(customer['Service'], customer['Customer Name'], new_name, phone, card, exp, cvv, plan, row_index=customer.get('row_index')):
-                                    st.success("Saved!")
-                                    st.rerun()
-                    
-                    st.divider()
+                    display_customer_card(customer, i)
+        else:
+            st.info("No customers found matching your search.")
 
 with tab2:
     due_day = st.selectbox("Select Due Day:", options=list(range(1, 32)))
     if due_day:
         customers = get_customers_by_due_day(all_data, due_day)
         st.write(f"Found **{len(customers)}** customers due on day {due_day}")
-        for c in customers:
-            card = c.get('Card Number', '')
-            exp = c.get('Exp', '')
-            cvv = c.get('CVV', '')
-            st.write(f"- **{c['Customer Name']}** ({c['Service']}) | Balance: ${c.get('Amount Due', 0)} | Card: {card} | Exp: {exp} | CVV: {cvv}")
+        if customers:
+            # Display as table for quick overview
+            table_data = []
+            for c in customers:
+                modem = str(c.get('Modem Numbers', '') or '').strip()
+                if modem.lower() in ('nan', 'none', ''):
+                    modem = ''
+                table_data.append({
+                    'Name': c.get('Customer Name', ''),
+                    'Service': c.get('Service', ''),
+                    'Balance': f"${safe_float(c.get('Amount Due', 0)):.2f}",
+                    'Plan Cost': f"${safe_float(c.get('Plan Cost', 0)):.2f}",
+                    'Card': mask_card(c.get('Card Number', '')),
+                    'Phone': c.get('Phone', ''),
+                    'Modem #': modem,
+                })
+            st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
 
 with tab3:
     past_due = get_past_due_customers(all_data)
-    st.write(f"Found **{len(past_due)}** past due customers")
-    for c in past_due:
-        card = c.get('Card Number', '')
-        exp = c.get('Exp', '')
-        cvv = c.get('CVV', '')
-        st.write(f"- **{c['Customer Name']}** ({c['Service']}) | Balance: ${c.get('Amount Due', 0)} | Card: {card} | Exp: {exp} | CVV: {cvv}")
+    st.write(f"Found **{len(past_due)}** customers with outstanding balance")
+    if past_due:
+        table_data = []
+        for c in past_due:
+            balance = get_balance(c)
+            modem = str(c.get('Modem Numbers', '') or '').strip()
+            if modem.lower() in ('nan', 'none', ''):
+                modem = ''
+            table_data.append({
+                'Name': c.get('Customer Name', ''),
+                'Service': c.get('Service', ''),
+                'Balance': f"${balance:.2f}",
+                'Due Day': c.get('Due Day', 'N/A'),
+                'Card': mask_card(c.get('Card Number', '')),
+                'Phone': c.get('Phone', ''),
+                'Modem #': modem,
+            })
+        st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
 
 with tab4:
     col1, col2 = st.columns(2)
@@ -753,32 +1029,98 @@ with tab4:
     if start_date and end_date:
         collections = get_collections_by_date(all_data, start_date, end_date)
         st.write(f"Found **{len(collections)}** payments")
-        for c in collections:
-            st.write(f"- {c['Customer Name']}: ${c.get('Amount Collected', 0)} on {c.get('Payment Date', 'N/A')}")
+        if collections:
+            st.dataframe(pd.DataFrame(collections), use_container_width=True, hide_index=True)
+
+with tab5:
+    st.subheader("Add New Customer")
+    with st.form("add_customer_form"):
+        add_service = st.selectbox("Service:", options=list(all_data.keys()))
+        add_name = st.text_input("Customer Name:")
+        add_phone = st.text_input("Phone:")
+        add_card = st.text_input("Card Number:")
+        add_exp = st.text_input("Expiration:")
+        add_cvv = st.text_input("CVV:", type="password")
+        add_plan = st.number_input("Plan Cost:", min_value=0.0, step=5.0)
+        add_due = st.number_input("Due Day (1-28):", min_value=1, max_value=28, value=1)
+
+        if st.form_submit_button("Add Customer"):
+            if add_name and add_service:
+                try:
+                    wb = load_workbook(EXCEL_FILE)
+                    ws = wb[add_service]
+                    headers = get_header_map(ws)
+                    new_row = ws.max_row + 1
+
+                    col_vals = {
+                        'Charge Date': datetime.now().strftime('%Y-%m-%d'),
+                        'Service': add_service,
+                        'Plan Cost': add_plan,
+                        'Customer Name': add_name,
+                        'Card Number': add_card,
+                        'Exp': add_exp,
+                        'CVV': add_cvv,
+                        'Amount Due': 0,
+                        'Status': '',
+                        'Phone': add_phone,
+                        'Due Day': add_due,
+                    }
+                    for col_name, val in col_vals.items():
+                        col_idx = headers.get(col_name)
+                        if col_idx:
+                            ws.cell(row=new_row, column=col_idx, value=val)
+
+                    locked_save(wb, EXCEL_FILE)
+                    st.success(f"Added {add_name} to {add_service}!")
+                    logger.info(f"Added new customer: {add_name} to {add_service}")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error adding customer: {e}")
+                    logger.error(f"Error adding customer: {e}")
+            else:
+                st.warning("Please enter at least a name and select a service.")
 
 # Download/Upload Section
 st.divider()
-st.header("💾 Download/Upload Database")
+st.header("Database Management")
 
 col1, col2 = st.columns(2)
 
 with col1:
     try:
-        with open("/opt/render/project/src/cleaned_billing_by_service.xlsx", "rb") as f:
-            st.download_button(label="📥 Download Excel File", data=f, file_name="cleaned_billing_by_service.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    except:
-        st.warning("File not found on server")
+        with open(EXCEL_FILE, "rb") as f:
+            st.download_button(
+                label="Download Excel Database",
+                data=f,
+                file_name="kwireless_billing.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+    except FileNotFoundError:
+        st.warning("Database file not found.")
 
 with col2:
-    uploaded_file = st.file_uploader("📤 Upload Updated Excel File", type=["xlsx"])
+    uploaded_file = st.file_uploader("Upload Updated Excel File", type=["xlsx"])
     if uploaded_file is not None:
-        try:
-            with open("/opt/render/project/src/cleaned_billing_by_service.xlsx", "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            st.success("✅ File uploaded! Refresh the page.")
-        except Exception as e:
-            st.error(f"Error: {e}")
+        # Validate file size (max 10MB)
+        if uploaded_file.size > 10 * 1024 * 1024:
+            st.error("File too large. Maximum 10MB allowed.")
+        else:
+            try:
+                # Validate it's a real Excel file
+                test_wb = load_workbook(uploaded_file)
+                sheet_names = test_wb.sheetnames
+                if not sheet_names:
+                    st.error("Invalid Excel file: no sheets found.")
+                else:
+                    # Save to the correct location
+                    uploaded_file.seek(0)
+                    with open(EXCEL_FILE, "wb") as f:
+                        f.write(uploaded_file.getbuffer())
+                    st.success(f"File uploaded with {len(sheet_names)} sheet(s). Refresh the page.")
+                    logger.info(f"Database file uploaded: {len(sheet_names)} sheets")
+            except Exception as e:
+                st.error(f"Invalid file: {e}")
 
 # Footer
 st.divider()
-st.caption(f"💾 Data file: {EXCEL_FILE}")
+st.caption("K-Wireless Payment Manager v2.0")
