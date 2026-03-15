@@ -767,7 +767,9 @@ def display_customer_card(customer, index):
     with col_info3:
         st.write(f"**Plan Cost:** ${safe_float(customer.get('Plan Cost', 0)):.2f}")
         card_display = mask_card(customer.get('Card Number', ''))
-        st.write(f"**Card:** {card_display}")
+        exp_display = customer.get('Exp', 'N/A')
+        cvv_display = customer.get('CVV', 'N/A')
+        st.write(f"**Card:** {card_display} | **Exp:** {exp_display} | **CVV:** {cvv_display}")
     if modem:
         st.write(f"**Modem Number:** {modem}")
 
@@ -860,7 +862,7 @@ def display_customer_card(customer, index):
             phone = st.text_input("Phone", value=str(customer.get('Phone', '')))
             card = st.text_input("Card Number", value=str(customer.get('Card Number', '')))
             exp = st.text_input("Exp", value=str(customer.get('Exp', '')))
-            cvv = st.text_input("CVV", value=str(customer.get('CVV', '')), type="password")
+            cvv = st.text_input("CVV", value=str(customer.get('CVV', '')))
             plan = st.number_input("Plan Cost", value=safe_float(customer.get('Plan Cost', 0)))
 
             # Modem Numbers
@@ -994,6 +996,8 @@ with tab2:
                     'Balance': f"${safe_float(c.get('Amount Due', 0)):.2f}",
                     'Plan Cost': f"${safe_float(c.get('Plan Cost', 0)):.2f}",
                     'Card': mask_card(c.get('Card Number', '')),
+                    'Exp': c.get('Exp', ''),
+                    'CVV': c.get('CVV', ''),
                     'Phone': c.get('Phone', ''),
                     'Modem #': modem,
                 })
@@ -1015,6 +1019,8 @@ with tab3:
                 'Balance': f"${balance:.2f}",
                 'Due Day': c.get('Due Day', 'N/A'),
                 'Card': mask_card(c.get('Card Number', '')),
+                'Exp': c.get('Exp', ''),
+                'CVV': c.get('CVV', ''),
                 'Phone': c.get('Phone', ''),
                 'Modem #': modem,
             })
@@ -1040,7 +1046,7 @@ with tab5:
         add_phone = st.text_input("Phone:")
         add_card = st.text_input("Card Number:")
         add_exp = st.text_input("Expiration:")
-        add_cvv = st.text_input("CVV:", type="password")
+        add_cvv = st.text_input("CVV:")
         add_plan = st.number_input("Plan Cost:", min_value=0.0, step=5.0)
         add_due = st.number_input("Due Day (1-28):", min_value=1, max_value=28, value=1)
 
