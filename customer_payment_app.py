@@ -12,6 +12,7 @@ import logging
 import os
 import fcntl
 import shutil
+import uuid
  
 # === LOGGING ===
 logging.basicConfig(
@@ -37,8 +38,120 @@ COL = {
     'notes': 'Notes',
     'due_day': 'Due Day',
     'notes2': 'Notes2',
+    'square_customer_id': 'Square Customer ID',
+    'square_card_id': 'Square Card ID',
 }
- 
+
+# === SQUARE PAYMENT INTEGRATION ===
+SQUARE_ACCESS_TOKEN = "sq0idp-Wl2yHJOR0rna6LrzgCDjhg"
+SQUARE_LOCATION_ID  = "LJQJN0SC79G1M"
+
+def get_square_client():
+    """Return a configured Square API client, or None if SDK not installed."""
+    try:
+        from square.client import Client
+        return Client(access_token=SQUARE_ACCESS_TOKEN, environment='production')
+    except ImportError:
+        return None
+
+
+def save_square_ids(sheet_name, customer_name, square_customer_id, square_card_id):
+    """Persist Square Customer ID and Card ID to Excel (adds columns if needed)."""
+    try:
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[sheet_name]
+        headers = get_header_map(ws)
+        for col_name in ['Square Customer ID', 'Square Card ID']:
+            if col_name not in headers:
+                max_col = ws.max_column + 1
+                ws.cell(row=1, column=max_col, value=col_name)
+                headers[col_name] = max_col
+        for row in ws.iter_rows(min_row=2):
+            if get_cell(row, headers, 'Customer Name') == customer_name:
+                if square_customer_id is not None:
+                    set_cell(row, headers, 'Square Customer ID', square_customer_id)
+                if square_card_id is not None:
+                    set_cell(row, headers, 'Square Card ID', square_card_id)
+                break
+        locked_save(wb, EXCEL_FILE)
+        return True
+    except Exception as e:
+        logger.error(f"Error saving Square IDs for {customer_name}: {e}")
+        return False
+
+
+def create_square_customer(customer_name, phone):
+    """Create a Square customer record. Returns (customer_id or None, error or None)."""
+    client = get_square_client()
+    if not client:
+        return None, "Square SDK not installed (pip install squareup)."
+    name_parts = str(customer_name).strip().split(' ', 1)
+    body = {
+        "idempotency_key": str(uuid.uuid4()),
+        "given_name": name_parts[0],
+        "phone_number": str(phone).strip() if phone else '',
+    }
+    if len(name_parts) > 1:
+        body["family_name"] = name_parts[1]
+    try:
+        result = client.customers.create_customer(body=body)
+        if result.is_success():
+            return result.body['customer']['id'], None
+        errs = result.errors
+        return None, '; '.join([e.get('detail', e.get('code', '')) for e in errs])
+    except Exception as e:
+        return None, str(e)
+
+
+def list_square_cards(square_customer_id):
+    """Return (list of card dicts, error or None) for a Square customer."""
+    client = get_square_client()
+    if not client:
+        return [], "Square SDK not installed."
+    try:
+        result = client.cards.list_cards(customer_id=square_customer_id)
+        if result.is_success():
+            return result.body.get('cards', []), None
+        errs = result.errors
+        return [], '; '.join([e.get('detail', e.get('code', '')) for e in errs])
+    except Exception as e:
+        return [], str(e)
+
+
+def square_charge_card(customer_name, amount, square_card_id, square_customer_id=None, note=""):
+    """Charge a card on file via Square. Returns (success, message, payment_id or None)."""
+    client = get_square_client()
+    if not client:
+        return False, "Square SDK not installed (pip install squareup).", None
+    if not square_card_id:
+        return False, "No Square Card ID provided.", None
+    try:
+        body = {
+            "source_id": square_card_id,
+            "idempotency_key": str(uuid.uuid4()),
+            "amount_money": {
+                "amount": int(round(amount * 100)),
+                "currency": "USD",
+            },
+            "location_id": SQUARE_LOCATION_ID,
+            "note": note or f"K-Wireless payment for {customer_name}",
+            "autocomplete": True,
+        }
+        if square_customer_id:
+            body["customer_id"] = square_customer_id
+        result = client.payments.create_payment(body=body)
+        if result.is_success():
+            pmt = result.body.get('payment', {})
+            pid = pmt.get('id', '')
+            paid = pmt.get('amount_money', {}).get('amount', 0) / 100
+            return True, f"Charged ${paid:.2f} via Square (ID: {pid})", pid
+        errs = result.errors
+        msg = '; '.join([f"{e.get('code', '')}: {e.get('detail', '')}" for e in errs])
+        return False, f"Card declined: {msg}", None
+    except Exception as e:
+        return False, f"Square API error: {str(e)}", None
+
+
 # === 12-MONTH AGING SYSTEM ===
 MONTHS_2026 = [
     'Jan_2026', 'Feb_2026', 'Mar_2026', 'Apr_2026', 'May_2026', 'Jun_2026',
@@ -676,6 +789,8 @@ def _build_customer_result(row, service, idx=None):
         'Notes2': row.get('Notes2', ''),
         'Payment Date': row.get('Payment Date', ''),
         'Modem Numbers': row.get('Modem Numbers', ''),
+        'Square Customer ID': row.get('Square Customer ID', ''),
+        'Square Card ID': row.get('Square Card ID', ''),
     }
     if idx is not None:
         result['row_index'] = idx
@@ -802,16 +917,40 @@ def auto_charge_due_today():
                     charge_amount = safe_float(plan_cost)
                     if charge_amount <= 0:
                         continue
- 
-                    # Add charge to current month
-                    set_cell(row, headers, month_key, charge_amount)
- 
+
+                    # === Square charging (if customer has a card on file) ===
+                    sq_card_raw = get_cell(row, headers, 'Square Card ID')
+                    sq_cust_raw = get_cell(row, headers, 'Square Customer ID')
+                    sq_card_id  = str(sq_card_raw).strip() if sq_card_raw else ''
+                    sq_cust_id  = str(sq_cust_raw).strip() if sq_cust_raw else ''
+                    if sq_card_id.lower()  in ('nan', 'none', ''): sq_card_id  = ''
+                    if sq_cust_id.lower()  in ('nan', 'none', ''): sq_cust_id  = ''
+
+                    square_payment_id = None
+                    square_error      = None
+                    if sq_card_id:
+                        sq_ok, sq_msg, sq_pid = square_charge_card(
+                            customer_name, charge_amount, sq_card_id,
+                            sq_cust_id or None,
+                            note=f"K-Wireless auto-charge {today.strftime('%m/%d/%Y')}"
+                        )
+                        if sq_ok:
+                            square_payment_id = sq_pid
+                        else:
+                            square_error = sq_msg
+
+                    # Set month balance: 0 (paid) if Square succeeded, else charge_amount (owed)
+                    if square_payment_id:
+                        set_cell(row, headers, month_key, 0)
+                    else:
+                        set_cell(row, headers, month_key, charge_amount)
+
                     # Update total Amount Due with formula
                     row_num = row[0].row
                     set_cell(row, headers, 'Amount Due', f'=SUM(N{row_num}:Y{row_num})')
- 
+
                     # Advance due date 30 days from Charge Date (the authoritative due date)
-                    # Do NOT use Due Day + current month — Due Day can be out of sync with Charge Date
+                    new_due_date = None
                     try:
                         base_date = None
                         if charge_date_val:
@@ -822,23 +961,48 @@ def auto_charge_due_today():
                                     base_date = datetime.strptime(str(charge_date_val).strip()[:10], '%Y-%m-%d')
                             except Exception:
                                 pass
-                        if base_date is None:
-                            # Fallback: build from Due Day + current month
+                        if base_date is None and due_day_int is not None:
                             max_day = calendar.monthrange(current_year, current_month)[1]
                             due_day_clamped = min(due_day_int, max_day)
                             base_date = datetime(current_year, current_month, due_day_clamped)
-                        new_due_date = base_date + timedelta(days=30)
-                        set_cell(row, headers, 'Due Day', new_due_date.day)
-                        set_cell(row, headers, 'Charge Date', new_due_date.strftime('%Y-%m-%d'))
+                        if base_date:
+                            new_due_date = base_date + timedelta(days=30)
+                            set_cell(row, headers, 'Due Day', new_due_date.day)
+                            set_cell(row, headers, 'Charge Date', new_due_date.strftime('%Y-%m-%d'))
                     except Exception:
                         pass
- 
-                    # Label catch-up charges so you can see which ones were missed
-                    if due_day_int != today.day:
+
+                    # Write note for Square charges so collections parser picks them up
+                    if square_payment_id or square_error:
+                        existing_notes = str(get_cell(row, headers, 'Notes', '') or '')
+                        ts = today.strftime('%Y-%m-%d %I:%M %p')
+                        if square_payment_id:
+                            note_entry = (
+                                f"Paid ${charge_amount:.2f} ({month_key}) on {ts}"
+                                f" | Square: {square_payment_id}"
+                            )
+                            if new_due_date:
+                                note_entry += f" | Next due: {new_due_date.strftime('%m/%d/%Y')}"
+                        else:
+                            short_err = (square_error or '')[:80]
+                            note_entry = f"Square DECLINED ${charge_amount:.2f} on {today.strftime('%Y-%m-%d')}: {short_err}"
+                        new_notes = (existing_notes + " | " + note_entry) if existing_notes else note_entry
+                        set_cell(row, headers, 'Notes', new_notes)
+
+                    # Record in results list
+                    if square_payment_id:
+                        charged.append(f"{customer_name} ({sheet_name}): ${charge_amount:.2f} ✅ Charged via Square")
+                    elif square_error:
+                        charged.append(f"{customer_name} ({sheet_name}): ${charge_amount:.2f} ❌ Square declined — balance added")
+                    elif due_day_int is not None and due_day_int != today.day:
                         charged.append(f"{customer_name} ({sheet_name}): ${charge_amount:.2f} ⚠️ catch-up from day {due_day_int}")
                     else:
                         charged.append(f"{customer_name} ({sheet_name}): ${charge_amount:.2f}")
-                    logger.info(f"Auto-charged {customer_name} ({sheet_name}): ${charge_amount:.2f}")
+
+                    logger.info(
+                        f"Auto-charged {customer_name} ({sheet_name}): ${charge_amount:.2f}"
+                        + (f" via Square {square_payment_id}" if square_payment_id else "")
+                    )
                 except Exception as e:
                     logger.error(f"Error charging {customer_name}: {e}")
  
@@ -975,6 +1139,11 @@ def display_customer_card(customer, index):
         exp_display = customer.get('Exp', 'N/A')
         cvv_display = customer.get('CVV', 'N/A')
         st.write(f"**Card:** {card_display} | **Exp:** {exp_display} | **CVV:** {cvv_display}")
+        sq_card_chk = str(customer.get('Square Card ID', '') or '').strip()
+        if sq_card_chk and sq_card_chk.lower() not in ('nan', 'none', ''):
+            st.write("**Square:** ✅ Card on file")
+        else:
+            st.write("**Square:** ⬜ No card linked")
     if modem:
         st.write(f"**Modem Number:** {modem}")
  
@@ -1080,6 +1249,132 @@ def display_customer_card(customer, index):
                     st.rerun()
                 else:
                     st.error(f"Rollback failed: {msg}")
+
+    # === Square Account Management ===
+    sq_card_id  = str(customer.get('Square Card ID', '')  or '').strip()
+    sq_cust_id  = str(customer.get('Square Customer ID', '') or '').strip()
+    if sq_card_id.lower()  in ('nan', 'none', ''): sq_card_id  = ''
+    if sq_cust_id.lower()  in ('nan', 'none', ''): sq_cust_id  = ''
+
+    with st.expander("🔗 Square Account"):
+        if sq_cust_id:
+            st.info(f"Customer ID: `{sq_cust_id}`")
+            if sq_card_id:
+                st.success(f"Card on file: `{sq_card_id}`")
+            else:
+                st.warning("No card linked yet.")
+
+            col_sq1, col_sq2 = st.columns(2)
+            with col_sq1:
+                if st.button("List Cards on File", key=f"sq_list_{index}"):
+                    cards, err = list_square_cards(sq_cust_id)
+                    if err:
+                        st.error(f"Error: {err}")
+                    elif cards:
+                        st.session_state[f'sq_cards_{index}'] = cards
+                    else:
+                        st.warning("No cards on file in Square.")
+            with col_sq2:
+                if st.button("Refresh", key=f"sq_refresh_{index}"):
+                    st.session_state.pop(f'sq_cards_{index}', None)
+                    st.rerun()
+
+            # Show listed cards
+            if f'sq_cards_{index}' in st.session_state:
+                for card in st.session_state[f'sq_cards_{index}']:
+                    cid   = card.get('id', '')
+                    brand = card.get('card_brand', '').replace('_', ' ')
+                    last4 = card.get('last_4', '???')
+                    exp_m = card.get('exp_month', '')
+                    exp_y = card.get('exp_year', '')
+                    is_active = card.get('enabled', True)
+                    label = f"{brand} ...{last4}  exp {exp_m}/{exp_y}" + (" ✅" if is_active else " ❌ disabled")
+                    st.write(f"• `{cid}` — {label}")
+                    if st.button(f"Use ...{last4} as default", key=f"use_card_{cid}_{index}"):
+                        if save_square_ids(customer['Service'], customer['Customer Name'], sq_cust_id, cid):
+                            st.success(f"Card ...{last4} saved!")
+                            st.session_state.pop(f'sq_cards_{index}', None)
+                            st.rerun()
+        else:
+            st.warning("No Square customer linked yet.")
+            if st.button("✨ Create Square Customer", key=f"sq_create_{index}"):
+                with st.spinner("Creating customer in Square..."):
+                    new_cust_id, err = create_square_customer(
+                        customer['Customer Name'], customer.get('Phone', '')
+                    )
+                if new_cust_id:
+                    save_square_ids(customer['Service'], customer['Customer Name'], new_cust_id, '')
+                    st.success(f"Customer created! ID: `{new_cust_id}`")
+                    st.rerun()
+                else:
+                    st.error(f"Square error: {err}")
+
+        st.divider()
+        st.caption("Or enter IDs manually (get from Square Dashboard → Customers):")
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            manual_cust_id = st.text_input("Square Customer ID", key=f"manual_sq_cust_{index}",
+                                           placeholder="e.g. CUST_XXXXXXXX")
+        with col_m2:
+            manual_card_id = st.text_input("Square Card ID", key=f"manual_sq_card_{index}",
+                                           placeholder="e.g. ccof_XXXXXXXX")
+        if st.button("💾 Save Square IDs", key=f"save_sq_{index}"):
+            if manual_cust_id or manual_card_id:
+                cust_to_save = manual_cust_id if manual_cust_id else sq_cust_id
+                card_to_save = manual_card_id if manual_card_id else sq_card_id
+                if save_square_ids(customer['Service'], customer['Customer Name'],
+                                   cust_to_save, card_to_save):
+                    st.success("Square IDs saved!")
+                    st.rerun()
+            else:
+                st.warning("Enter at least one ID to save.")
+
+    # === Charge Card via Square ===
+    if sq_card_id:
+        with st.expander("💳 Charge Card via Square"):
+            sq_pay_month = st.selectbox(
+                "Apply to Month:", options=[m[0] for m in MONTHS_DISPLAY],
+                format_func=lambda x: dict(MONTHS_DISPLAY).get(x, x),
+                key=f"sq_pay_month_{index}"
+            )
+            month_bal = monthly_balances.get(sq_pay_month, 0)
+            default_amt = float(month_bal) if month_bal > 0 else float(safe_float(customer.get('Plan Cost', 0)))
+            sq_amount = st.number_input(
+                "Charge Amount ($):", min_value=0.01, value=default_amt,
+                step=5.0, key=f"sq_amt_{index}"
+            )
+            sq_note = st.text_input("Note (optional):", key=f"sq_note_{index}")
+
+            current_month_col = MONTH_MAP.get(datetime.now().month)
+            if sq_pay_month == current_month_col:
+                st.caption("Current month — due date will advance 30 days after charge.")
+
+            if st.button(f"💳 Charge ${sq_amount:.2f} via Square", key=f"sq_charge_{index}"):
+                with st.spinner("Processing Square payment..."):
+                    sq_ok, sq_msg, sq_pid = square_charge_card(
+                        customer['Customer Name'], sq_amount, sq_card_id,
+                        sq_cust_id or None,
+                        note=sq_note or f"K-Wireless payment"
+                    )
+                if sq_ok:
+                    # Record the payment in Excel
+                    is_current = (sq_pay_month == current_month_col)
+                    p_ok, new_due = save_payment(
+                        customer['Service'], customer['Customer Name'],
+                        sq_amount, pay_month=sq_pay_month,
+                        notes=f"Square ID: {sq_pid}",
+                        advance_due=is_current
+                    )
+                    if p_ok:
+                        if is_current and new_due:
+                            st.success(f"✅ {sq_msg} — Next due: {new_due.strftime('%m/%d/%Y')}")
+                        else:
+                            st.success(f"✅ {sq_msg}")
+                        st.rerun()
+                    else:
+                        st.warning(f"Square charged successfully ({sq_pid}) but Excel update failed. Please record manually.")
+                else:
+                    st.error(f"❌ {sq_msg}")
 
     # Edit customer info
     with st.expander("Edit Customer Info"):
@@ -1495,5 +1790,4 @@ with tab5:
 # Footer
 st.divider()
 st.caption("K-Wireless Payment Manager v2.0")
- 
  
