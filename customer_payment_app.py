@@ -46,13 +46,21 @@ COL = {
 SQUARE_ACCESS_TOKEN = "sq0idp-Wl2yHJOR0rna6LrzgCDjhg"
 SQUARE_LOCATION_ID  = "LJQJN0SC79G1M"
 
-def get_square_client():
-    """Return a configured Square API client, or None if SDK not installed."""
-    try:
-        from square.client import Client
-        return Client(access_token=SQUARE_ACCESS_TOKEN, environment='production')
-    except ImportError:
-        return None
+def _square_headers():
+    """Return HTTP headers for Square API requests."""
+    return {
+        "Authorization": f"Bearer {SQUARE_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+        "Square-Version": "2024-01-18",
+    }
+
+
+def _square_errors(data):
+    """Extract a readable error string from a Square API response dict."""
+    errs = data.get("errors", [])
+    if errs:
+        return "; ".join(f"{e.get('code','')}: {e.get('detail','')}" for e in errs)
+    return "Unknown error"
 
 
 def save_square_ids(sheet_name, customer_name, square_customer_id, square_card_id):
@@ -81,10 +89,8 @@ def save_square_ids(sheet_name, customer_name, square_customer_id, square_card_i
 
 
 def create_square_customer(customer_name, phone):
-    """Create a Square customer record. Returns (customer_id or None, error or None)."""
-    client = get_square_client()
-    if not client:
-        return None, "Square SDK not installed (pip install squareup)."
+    """Create a Square customer via REST API. Returns (customer_id or None, error or None)."""
+    import requests as _req
     name_parts = str(customer_name).strip().split(' ', 1)
     body = {
         "idempotency_key": str(uuid.uuid4()),
@@ -94,60 +100,65 @@ def create_square_customer(customer_name, phone):
     if len(name_parts) > 1:
         body["family_name"] = name_parts[1]
     try:
-        result = client.customers.create_customer(body=body)
-        if result.is_success():
-            return result.body['customer']['id'], None
-        errs = result.errors
-        return None, '; '.join([e.get('detail', e.get('code', '')) for e in errs])
+        r = _req.post(
+            "https://connect.squareup.com/v2/customers",
+            json=body, headers=_square_headers(), timeout=15
+        )
+        data = r.json()
+        if r.status_code == 200 and "customer" in data:
+            return data["customer"]["id"], None
+        return None, _square_errors(data)
     except Exception as e:
         return None, str(e)
 
 
 def list_square_cards(square_customer_id):
-    """Return (list of card dicts, error or None) for a Square customer."""
-    client = get_square_client()
-    if not client:
-        return [], "Square SDK not installed."
+    """Return (list of card dicts, error or None) for a Square customer via REST API."""
+    import requests as _req
     try:
-        result = client.cards.list_cards(customer_id=square_customer_id)
-        if result.is_success():
-            return result.body.get('cards', []), None
-        errs = result.errors
-        return [], '; '.join([e.get('detail', e.get('code', '')) for e in errs])
+        r = _req.get(
+            "https://connect.squareup.com/v2/cards",
+            params={"customer_id": square_customer_id},
+            headers=_square_headers(), timeout=15
+        )
+        data = r.json()
+        if r.status_code == 200:
+            return data.get("cards", []), None
+        return [], _square_errors(data)
     except Exception as e:
         return [], str(e)
 
 
 def square_charge_card(customer_name, amount, square_card_id, square_customer_id=None, note=""):
-    """Charge a card on file via Square. Returns (success, message, payment_id or None)."""
-    client = get_square_client()
-    if not client:
-        return False, "Square SDK not installed (pip install squareup).", None
+    """Charge a card on file via Square REST API. Returns (success, message, payment_id or None)."""
+    import requests as _req
     if not square_card_id:
         return False, "No Square Card ID provided.", None
+    body = {
+        "source_id": square_card_id,
+        "idempotency_key": str(uuid.uuid4()),
+        "amount_money": {
+            "amount": int(round(amount * 100)),
+            "currency": "USD",
+        },
+        "location_id": SQUARE_LOCATION_ID,
+        "note": note or f"K-Wireless payment for {customer_name}",
+        "autocomplete": True,
+    }
+    if square_customer_id:
+        body["customer_id"] = square_customer_id
     try:
-        body = {
-            "source_id": square_card_id,
-            "idempotency_key": str(uuid.uuid4()),
-            "amount_money": {
-                "amount": int(round(amount * 100)),
-                "currency": "USD",
-            },
-            "location_id": SQUARE_LOCATION_ID,
-            "note": note or f"K-Wireless payment for {customer_name}",
-            "autocomplete": True,
-        }
-        if square_customer_id:
-            body["customer_id"] = square_customer_id
-        result = client.payments.create_payment(body=body)
-        if result.is_success():
-            pmt = result.body.get('payment', {})
-            pid = pmt.get('id', '')
-            paid = pmt.get('amount_money', {}).get('amount', 0) / 100
+        r = _req.post(
+            "https://connect.squareup.com/v2/payments",
+            json=body, headers=_square_headers(), timeout=15
+        )
+        data = r.json()
+        if r.status_code == 200 and "payment" in data:
+            pmt  = data["payment"]
+            pid  = pmt.get("id", "")
+            paid = pmt.get("amount_money", {}).get("amount", 0) / 100
             return True, f"Charged ${paid:.2f} via Square (ID: {pid})", pid
-        errs = result.errors
-        msg = '; '.join([f"{e.get('code', '')}: {e.get('detail', '')}" for e in errs])
-        return False, f"Card declined: {msg}", None
+        return False, f"Card declined: {_square_errors(data)}", None
     except Exception as e:
         return False, f"Square API error: {str(e)}", None
 
