@@ -850,33 +850,49 @@ def auto_charge_due_today():
  
  
 def get_past_due_customers(all_data):
-    """Get all customers with outstanding balances."""
+    """Return customers who are genuinely past due:
+    - Any balance in a PREVIOUS month (always past due), OR
+    - A balance in the CURRENT month only if their Charge Date is today or in the past.
+    Customers whose balance is only in the current month with a future Charge Date are excluded."""
     results = []
-    today_day = datetime.now().day
+    today = datetime.now().date()
+    current_month_key = MONTH_MAP.get(today.month)
+    current_month_idx = MONTHS_2026.index(current_month_key) if current_month_key in MONTHS_2026 else -1
+    past_month_keys = MONTHS_2026[:current_month_idx] if current_month_idx > 0 else []
+
     for service, df in all_data.items():
         if df is None or df.empty:
             continue
         for _, row in df.iterrows():
-            due_day = row.get('Due Day')
             status = row.get('Status', '')
-            amount_due = row.get('Amount Due', 0)
- 
-            if due_day is None or pd.isna(due_day):
-                continue
- 
             status_str = str(status).upper() if status else ''
-            is_paid = 'PAID' in status_str or status_str == 'READY'
- 
-            has_balance = safe_float(amount_due) > 0
- 
-            # Also check monthly totals
-            if not has_balance:
-                for m in MONTHS_2026:
-                    if safe_float(row.get(m, 0)) > 0:
-                        has_balance = True
-                        break
- 
-            if not is_paid and has_balance:
+            if 'PAID' in status_str or status_str == 'READY':
+                continue
+
+            # Check for balance in previous months — always past due
+            has_prev_balance = any(safe_float(row.get(m, 0)) > 0 for m in past_month_keys)
+
+            # Check for balance in current month
+            current_month_balance = safe_float(row.get(current_month_key, 0)) if current_month_key else 0
+            has_current_balance = current_month_balance > 0
+
+            # For current month balance, only count as past due if Charge Date <= today
+            current_month_due = False
+            if has_current_balance:
+                charge_date_raw = row.get('Charge Date')
+                if charge_date_raw is not None and not pd.isna(charge_date_raw):
+                    try:
+                        if isinstance(charge_date_raw, datetime):
+                            charge_date = charge_date_raw.date()
+                        else:
+                            charge_date = datetime.strptime(str(charge_date_raw).strip()[:10], '%Y-%m-%d').date()
+                        current_month_due = (charge_date <= today)
+                    except Exception:
+                        current_month_due = True  # Can't parse date — include to be safe
+                else:
+                    current_month_due = True  # No charge date — include to be safe
+
+            if has_prev_balance or current_month_due:
                 results.append(_build_customer_result(row, service))
     return results
  
@@ -1107,6 +1123,100 @@ def display_customer_card(customer, index):
     st.divider()
  
  
+
+def generate_past_due_report(past_due_customers):
+    """Generate a printable HTML report of all past due customers with months owed."""
+    from datetime import datetime as _dt
+    now = _dt.now().strftime('%B %d, %Y %I:%M %p')
+    rows = ""
+    for c in past_due_customers:
+        name     = c.get('Customer Name', '')
+        service  = c.get('Service', '')
+        phone    = str(c.get('Phone', '') or '')
+        card     = mask_card(c.get('Card Number', ''))
+        exp      = str(c.get('Exp', '') or '')
+        cvv      = str(c.get('CVV', '') or '')
+        due_day  = c.get('Due Day', '')
+        balance  = get_balance(c)
+        modem    = str(c.get('Modem Numbers', '') or '').strip()
+        if modem.lower() in ('nan', 'none', ''):
+            modem = ''
+
+        # Find which months have a balance
+        months_owed = []
+        for m in MONTHS_2026:
+            val = safe_float(c.get(m, 0))
+            if val > 0:
+                label = dict(MONTHS_DISPLAY).get(m, m)
+                months_owed.append(f"{label}: ${val:.2f}")
+        months_str = ', '.join(months_owed) if months_owed else 'Balance on account'
+
+        rows += f"""
+        <tr>
+            <td>{name}</td>
+            <td>{service}</td>
+            <td>{phone}</td>
+            <td>${balance:.2f}</td>
+            <td>{months_str}</td>
+            <td>{due_day}</td>
+            <td>{card}</td>
+            <td>{exp}</td>
+            <td>{cvv}</td>
+            <td>{modem}</td>
+        </tr>"""
+
+    html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>K-Wireless Past Due Report</title>
+<style>
+  body {{ font-family: Arial, sans-serif; font-size: 11px; margin: 20px; color: #000; }}
+  h1 {{ font-size: 18px; margin-bottom: 4px; }}
+  .meta {{ font-size: 11px; color: #555; margin-bottom: 14px; }}
+  table {{ width: 100%; border-collapse: collapse; }}
+  th {{ background: #1a1a2e; color: #fff; padding: 6px 8px; text-align: left; font-size: 11px; }}
+  td {{ padding: 5px 8px; border-bottom: 1px solid #ddd; vertical-align: top; }}
+  tr:nth-child(even) {{ background: #f7f7f7; }}
+  .total-row {{ font-weight: bold; background: #eef; }}
+  @media print {{
+    button {{ display: none; }}
+    body {{ margin: 10px; }}
+  }}
+</style>
+</head>
+<body>
+<button onclick="window.print()" style="margin-bottom:12px;padding:8px 18px;background:#1a1a2e;color:white;border:none;border-radius:4px;cursor:pointer;font-size:13px;">🖨️ Print Report</button>
+<h1>K-Wireless — Past Due Customers</h1>
+<div class="meta">Generated: {now} &nbsp;|&nbsp; Total past due: <strong>{len(past_due_customers)}</strong> customers</div>
+<table>
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Service</th>
+      <th>Phone</th>
+      <th>Balance</th>
+      <th>Months Owed</th>
+      <th>Due Day</th>
+      <th>Card</th>
+      <th>Exp</th>
+      <th>CVV</th>
+      <th>Modem #</th>
+    </tr>
+  </thead>
+  <tbody>
+    {rows}
+    <tr class="total-row">
+      <td colspan="3">TOTAL ({len(past_due_customers)} customers)</td>
+      <td>${sum(get_balance(c) for c in past_due_customers):.2f}</td>
+      <td colspan="6"></td>
+    </tr>
+  </tbody>
+</table>
+</body>
+</html>"""
+    return html
+
 # === MAIN UI ===
  
 st.title("📡 K-Wireless Payment Manager")
@@ -1281,7 +1391,20 @@ with tab2:
  
 with tab3:
     past_due = get_past_due_customers(all_data)
-    st.write(f"Found **{len(past_due)}** customers with outstanding balance")
+    total_past_due_bal = sum(get_balance(c) for c in past_due)
+    col_pd1, col_pd2 = st.columns([3, 1])
+    with col_pd1:
+        st.write(f"Found **{len(past_due)}** customers with outstanding balance — Total: **${total_past_due_bal:,.2f}**")
+    with col_pd2:
+        if past_due:
+            report_html = generate_past_due_report(past_due)
+            st.download_button(
+                label="🖨️ Print / Download Report",
+                data=report_html,
+                file_name="past_due_report.html",
+                mime="text/html",
+                use_container_width=True
+            )
     if past_due:
         table_data = []
         for c in past_due:
@@ -1289,15 +1412,22 @@ with tab3:
             modem = str(c.get('Modem Numbers', '') or '').strip()
             if modem.lower() in ('nan', 'none', ''):
                 modem = ''
+            # Which months are owed
+            months_owed = []
+            for m in MONTHS_2026:
+                val = safe_float(c.get(m, 0))
+                if val > 0:
+                    months_owed.append(f"{dict(MONTHS_DISPLAY).get(m, m)}: ${val:.2f}")
             table_data.append({
                 'Name': c.get('Customer Name', ''),
                 'Service': c.get('Service', ''),
+                'Phone': c.get('Phone', ''),
                 'Balance': f"${balance:.2f}",
+                'Months Owed': ', '.join(months_owed) if months_owed else '',
                 'Due Day': c.get('Due Day', 'N/A'),
                 'Card': mask_card(c.get('Card Number', '')),
                 'Exp': c.get('Exp', ''),
                 'CVV': c.get('CVV', ''),
-                'Phone': c.get('Phone', ''),
                 'Modem #': modem,
             })
         st.dataframe(pd.DataFrame(table_data), use_container_width=True, hide_index=True)
@@ -1365,4 +1495,5 @@ with tab5:
 # Footer
 st.divider()
 st.caption("K-Wireless Payment Manager v2.0")
+ 
  
