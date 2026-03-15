@@ -341,9 +341,11 @@ def auto_charge_due_today(charge_date=None):
     
     month_key = MONTH_MAP.get(current_month, 'Mar_2026')
     
-    debug_info = [f"Today: day={current_day}, month={current_month}, month_key={month_key}", f"EXCEL_FILE: {EXCEL_FILE}"]
+    debug_info = []
     charged = []
     try:
+        debug_info.append(f"Date: day={current_day}, month={current_month}, month_key={month_key}")
+        debug_info.append(f"File: {EXCEL_FILE}")
         wb = load_workbook(EXCEL_FILE)
         
         for sheet_name in wb.sheetnames:
@@ -388,6 +390,7 @@ def auto_charge_due_today(charge_date=None):
                     try:
                         # Use Plan Cost as the charge amount
                         charge_amount = float(plan_cost) if plan_cost else 0
+                        debug_info.append(f"Charging: {customer_name}, amount={charge_amount}, month_col={month_col}")
                         
                         if charge_amount > 0:
                             # Add to existing balance
@@ -420,11 +423,13 @@ def auto_charge_due_today(charge_date=None):
                                     pass
                             
                             charged.append(f"{customer_name} ({sheet_name}): ${charge_amount}")
-                    except:
+                    except Exception as e:
                         pass
         
         wb.save(EXCEL_FILE)
-        return charged
+        if charged:
+            return charged
+        return debug_info
     except Exception as e:
         return [f"Error: {str(e)}"]
 
@@ -576,9 +581,15 @@ with st.expander("⚡ Auto-Charge"):
             charge_dt = datetime.combine(charge_date, datetime.min.time())
             results = auto_charge_due_today(charge_dt)
             if results:
-                st.success(f"Charged {len(results)} customer(s)!")
-                for r in results:
-                    st.write(f"• {r}")
+                # Check if charged or debug
+                if any("Charging:" in str(r) for r in results):
+                    st.success(f"Charged {len([r for r in results if 'Charging:' in str(r)])} customer(s)!")
+                    for r in results:
+                        st.write(f"• {r}")
+                else:
+                    st.warning("Debug info:")
+                    for r in results:
+                        st.caption(r)
             else:
                 st.info("No customers to charge on selected date")
 
