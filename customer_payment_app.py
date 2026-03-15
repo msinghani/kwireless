@@ -450,8 +450,92 @@ def save_payment(sheet_name, customer_name, payment_amount, pay_month=None, note
         logger.error(f"Error saving payment: {e}")
         st.error(f"Error saving: {e}")
         return False, None
- 
- 
+
+
+def get_last_payment_with_month(notes_str):
+    """Parse the most recent payment entry from a Notes string including month label."""
+    import re
+    pattern = re.compile(
+        r'Paid \$([0-9,.]+)(?:\s+\(([^)]+)\))?\s+on\s+(\d{4}-\d{2}-\d{2}[^|]*)(?:\|\s*Next due:\s*(\d{2}/\d{2}/\d{4}))?'
+    )
+    matches = list(pattern.finditer(notes_str))
+    if not matches:
+        return None
+    m = matches[-1]
+    return {
+        'amount':     float(m.group(1).replace(',', '')),
+        'month_col':  m.group(2),
+        'paid_on':    m.group(3).strip(),
+        'next_due':   m.group(4),
+        'full_entry': m.group(0),
+    }
+
+
+def rollback_payment(sheet_name, customer_name):
+    """Reverse the most recent payment for a customer.
+    Restores month balance, removes payment note, and reverses due date advance."""
+    try:
+        wb = load_workbook(EXCEL_FILE)
+        ws = wb[sheet_name]
+        headers = get_header_map(ws)
+
+        for row in ws.iter_rows(min_row=2):
+            if get_cell(row, headers, 'Customer Name') != customer_name:
+                continue
+
+            notes = str(get_cell(row, headers, 'Notes', '') or '')
+            last = get_last_payment_with_month(notes)
+            if not last:
+                return False, "No payment found in notes to roll back."
+
+            # Restore month column balance
+            month_col = last['month_col']
+            if month_col and month_col in headers:
+                set_cell(row, headers, month_col, last['amount'])
+
+            # Reverse due date advance: subtract 30 days from Next due
+            original_due = None
+            if last['next_due']:
+                try:
+                    next_due_dt = datetime.strptime(last['next_due'], '%m/%d/%Y')
+                    original_due = next_due_dt - timedelta(days=30)
+                    set_cell(row, headers, 'Due Day', original_due.day)
+                    set_cell(row, headers, 'Charge Date', original_due.strftime('%Y-%m-%d'))
+                except Exception:
+                    pass
+
+            # Remove the last payment entry from Notes
+            entry = last['full_entry']
+            if f" | {entry}" in notes:
+                new_notes = notes.replace(f" | {entry}", "")
+            elif notes.strip() == entry.strip():
+                new_notes = ''
+            else:
+                new_notes = notes.replace(entry, "").strip().strip('|').strip()
+            set_cell(row, headers, 'Notes', new_notes)
+
+            # Recalculate Amount Due
+            row_num = row[0].row
+            set_cell(row, headers, 'Amount Due', f'=SUM(N{row_num}:Y{row_num})')
+
+            # Clear status
+            set_cell(row, headers, 'Status', '')
+
+            break
+
+        locked_save(wb, EXCEL_FILE)
+        msg = f"Rolled back ${last['amount']:.2f}"
+        if last['month_col']:
+            msg += f" ({last['month_col']})"
+        if original_due:
+            msg += f". Due date restored to {original_due.strftime('%m/%d/%Y')}."
+        logger.info(f"Rollback for {customer_name} ({sheet_name}): {msg}")
+        return True, msg
+    except Exception as e:
+        logger.error(f"Rollback error for {customer_name}: {e}")
+        return False, str(e)
+
+
 def advance_due_date(sheet_name, customer_name, days=30):
     """Advance the due date by calculating 30 days from the current due date.
  
@@ -960,6 +1044,27 @@ def display_customer_card(customer, index):
             else:
                 st.warning("Please enter a payment amount greater than $0.")
  
+
+    # Rollback last payment
+    notes_val = str(customer.get('Notes', '') or '')
+    last_pmt = get_last_payment_with_month(notes_val)
+    if last_pmt:
+        with st.expander("↩️ Rollback Last Payment"):
+            st.warning(
+                f"**Last payment:** ${last_pmt['amount']:.2f}"
+                + (f" ({last_pmt['month_col']})" if last_pmt['month_col'] else "")
+                + f" on {last_pmt['paid_on']}"
+                + (f" | Next due was: {last_pmt['next_due']}" if last_pmt['next_due'] else "")
+            )
+            st.caption("This will restore the month balance, remove the payment note, and reverse the due date advance.")
+            if st.button("⚠️ Confirm Rollback", key=f"rollback_{index}"):
+                success, msg = rollback_payment(customer['Service'], customer['Customer Name'])
+                if success:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(f"Rollback failed: {msg}")
+
     # Edit customer info
     with st.expander("Edit Customer Info"):
         with st.form(f"edit_form_{index}"):
